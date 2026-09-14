@@ -16,8 +16,8 @@ This file governs all Claude Code work in this repository. Read it before every 
 | Phase                                                                 | Status                              |
 | --------------------------------------------------------------------- | ----------------------------------- |
 | PHASE 0 — Foundation                                                  | COMPLETE / VERIFIED / FROZEN        |
-| PHASE 1 / Prompt 1 — Data Foundation + Ingestion                      | COMPLETE — awaiting freeze sign-off |
-| PHASE 1 / Prompt 2 — Campaign Queue, Throttling, Dispatch Eligibility | NOT STARTED                         |
+| PHASE 1 / Prompt 1 — Data Foundation + Ingestion                      | COMPLETE / VERIFIED / FROZEN        |
+| PHASE 1 / Prompt 2 — Campaign Queue, Throttling, Dispatch Eligibility | COMPLETE — awaiting freeze sign-off |
 | PHASE 2 — Messaging + Reply Intelligence                              | NOT STARTED                         |
 | PHASE 3 — Conversion / Booking + Operational Automation               | NOT STARTED                         |
 | PHASE 4 — Mission Control + Production Hardening                      | NOT STARTED                         |
@@ -91,6 +91,15 @@ apps/web  ──HTTP──▶  apps/api routes (Express only here)
   the transition against an explicit allowed-transition map.
 - `CampaignLead.status` changes only through `transitionCampaignLead`
   (`apps/api/src/modules/campaigns/membership.ts`); new edges need tests.
+- `Campaign.status` changes only through `applyCampaignAction`
+  (`apps/api/src/modules/campaigns/lifecycle.ts`).
+- `STAGED → QUEUED` happens only in `admitEligibleMembers`
+  (`apps/api/src/modules/dispatch/admission.ts`), which applies
+  `evaluateDispatchEligibility` — the single eligibility rule. `QUEUED` means
+  approved for sending, never that anything was sent; `STEP_1_SENT` is set only
+  after a provider accepts a message (Phase 2).
+- Business logic takes the reference time as a parameter; do not call
+  `new Date()` inside eligibility or capacity decisions.
 - Suppression is global and append-only (DB trigger). Anything that sends must
   re-check suppression immediately before the send, not rely on staging-time checks.
 - Hand-written SQL invariants (CHECKs, partial unique index, trigger) are not
@@ -118,8 +127,14 @@ External Service
 
 ## Async / jobs policy
 
-- Durable work goes through the `JobQueue` interface (`apps/api/src/jobs/queue.ts`).
-  Planned adapter: pg-boss on PostgreSQL. Do not add Redis without a proven need.
+- Durable work goes through the `JobQueue` interface (`apps/api/src/jobs/queue.ts`),
+  implemented by pg-boss in `jobs/boss.ts` (the only file importing pg-boss; tables
+  in the `pgboss` schema). Do not add Redis without a proven need.
+- Job names are constants in `jobs/campaign-scheduler.ts`; renaming one orphans
+  existing jobs. Workers start only in `server.ts` when `JOB_WORKERS_ENABLED` is
+  true — never in tests unless a test starts them explicitly.
+- Correctness never depends on pg-boss deduplication: handlers must stay safe
+  when duplicated, retried, or run concurrently in several processes.
 - Handlers must be idempotent; retries must be bounded; failures must be logged
   with `jobId` and surfaced, never swallowed.
 

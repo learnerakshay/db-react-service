@@ -7,7 +7,11 @@ import { ConflictError, NotFoundError, ValidationError } from '../../lib/errors.
 
 export const campaignConfigSchema = z
   .object({
-    timezone,
+    /**
+     * Explicit fallback for leads without a stored timezone. `null` means no
+     * fallback: such leads are never dispatch-eligible for this campaign.
+     */
+    timezone: timezone.nullable(),
     sendWindow: z.object({ start: timeOfDay, end: timeOfDay }),
     hourlyDispatchLimit: z.int().positive(),
     followUpDelayHours: z.number().positive(),
@@ -24,7 +28,7 @@ export const createCampaignSchema = z.object({
   name: z.string().trim().min(1).max(200),
   config: z
     .object({
-      timezone: z.string(),
+      timezone: z.string().nullable(),
       sendWindow: z.object({ start: z.string(), end: z.string() }),
       hourlyDispatchLimit: z.number(),
       followUpDelayHours: z.number(),

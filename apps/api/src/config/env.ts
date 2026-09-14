@@ -64,6 +64,14 @@ export const envSchema = z
         .max(100 * 1024 * 1024)
         .default(10 * 1024 * 1024),
     ),
+
+    // Background jobs. Set false to run an API-only process (no scheduler/workers).
+    JOB_WORKERS_ENABLED: field(
+      z
+        .enum(['true', 'false'])
+        .default('true')
+        .transform((value) => value === 'true'),
+    ),
   })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV === 'production') {

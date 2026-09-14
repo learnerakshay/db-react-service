@@ -3,6 +3,13 @@ import { fileURLToPath } from 'node:url';
 import { createApp } from './app.js';
 import { loadConfig, type AppConfig } from './config/index.js';
 import { createDatabase, databaseHealthCheck } from './db/client.js';
+import { createPgBossQueue } from './jobs/boss.js';
+import {
+  campaignJobQueues,
+  registerCampaignWorkers,
+  scheduleCampaignScheduler,
+} from './jobs/campaign-scheduler.js';
+import type { JobQueue } from './jobs/queue.js';
 import { ConfigurationError } from './lib/errors.js';
 import { createLogger } from './lib/logger.js';
 import { apiRouter } from './routes/api.js';
@@ -29,6 +36,39 @@ const logger = createLogger(config.logLevel);
 const db = config.database.url === undefined ? undefined : createDatabase(config.database.url);
 if (db === undefined) {
   logger.warn('DATABASE_URL is not set; database-backed features are unavailable');
+}
+
+let queue: JobQueue | undefined;
+if (db !== undefined && config.database.url !== undefined && config.jobs.workersEnabled) {
+  const deps = {
+    db,
+    logger,
+    config,
+    queue: createPgBossQueue(
+      {
+        connectionString: config.database.url,
+        schema: config.jobs.schema,
+        pollingIntervalSeconds: config.jobs.pollingIntervalSeconds,
+        stopTimeoutMs: config.jobs.stopTimeoutMs,
+        schedule: true,
+        queues: campaignJobQueues(config.jobs),
+      },
+      logger,
+    ),
+  };
+  queue = deps.queue;
+  try {
+    await queue.start();
+    await registerCampaignWorkers(deps);
+    await scheduleCampaignScheduler(deps);
+  } catch (err) {
+    logger.fatal({ err, operation: 'jobs.start' }, 'background jobs failed to start');
+    await queue.stop().catch(() => undefined);
+    await db.$disconnect();
+    process.exit(1);
+  }
+} else if (db !== undefined) {
+  logger.warn('JOB_WORKERS_ENABLED=false; scheduler and workers are not running in this process');
 }
 
 const app = createApp({
@@ -70,7 +110,8 @@ async function shutdown(reason: string, exitCode = 0): Promise<void> {
         });
       });
     }
-    // Future: stop the job queue here, before disconnecting the database.
+    // Stop taking jobs and let active ones finish before closing the database.
+    await queue?.stop();
     await db?.$disconnect();
     logger.info('shutdown complete');
   } catch (err) {

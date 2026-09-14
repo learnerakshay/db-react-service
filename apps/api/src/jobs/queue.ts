@@ -32,6 +32,21 @@ export interface Job<TPayload> {
 
 export type JobHandler<TPayload> = (job: Job<TPayload>) => Promise<void>;
 
+/** Declared up front; the adapter creates queues on start. */
+export interface QueueDefinition {
+  name: string;
+  /** Retries after the first failed attempt (bounded). */
+  retryLimit: number;
+  retryDelaySeconds: number;
+  /** An active job running longer than this is failed and retried. */
+  expireInSeconds: number;
+  /**
+   * At most one waiting job per idempotency key (one more may be active).
+   * Collapses duplicate enqueues, e.g. overlapping scheduler ticks.
+   */
+  singleQueuedPerKey: boolean;
+}
+
 export interface JobQueue {
   start(): Promise<void>;
   /** Stop accepting work and wait for in-flight handlers (graceful shutdown). */
@@ -39,4 +54,9 @@ export interface JobQueue {
   /** Returns the job ID, or null when deduplicated by idempotency key. */
   enqueue(name: string, payload: unknown, options?: EnqueueOptions): Promise<string | null>;
   work<TPayload>(name: string, handler: JobHandler<TPayload>): Promise<void>;
+  /**
+   * Enqueue `name` on a cron schedule (UTC). Each occurrence produces one job
+   * across all running instances.
+   */
+  schedule(name: string, cron: string): Promise<void>;
 }

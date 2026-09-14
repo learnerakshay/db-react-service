@@ -65,18 +65,23 @@ enum CampaignStatus {
   COMPLETED
 }
 
+/// Status changes only through apps/api/src/modules/campaigns/lifecycle.ts.
 model Campaign {
-  id        String         @id @default(uuid(7)) @db.Uuid
-  name      String         @db.VarChar(200)
-  status    CampaignStatus @default(DRAFT)
+  id              String         @id @default(uuid(7)) @db.Uuid
+  name            String         @db.VarChar(200)
+  status          CampaignStatus @default(DRAFT)
   /// CampaignConfig snapshot (Zod-validated), fixed at creation so later
   /// environment changes never alter a running campaign.
-  config    Json
-  createdAt DateTime       @default(now()) @db.Timestamptz(3)
-  updatedAt DateTime       @updatedAt @db.Timestamptz(3)
+  config          Json
+  statusChangedAt DateTime       @default(now()) @db.Timestamptz(3)
+  createdAt       DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime       @updatedAt @db.Timestamptz(3)
 
   members       CampaignLead[]
   importBatches ImportBatch[]
+  admissions    DispatchAdmission[]
+
+  @@index([status])
 }
 
 /// Campaign-specific lifecycle. Transitions are validated in
@@ -103,13 +108,54 @@ model CampaignLead {
   createdAt       DateTime           @default(now()) @db.Timestamptz(3)
   updatedAt       DateTime           @updatedAt @db.Timestamptz(3)
 
-  campaign    Campaign     @relation(fields: [campaignId], references: [id], onDelete: Restrict)
-  lead        Lead         @relation(fields: [leadId], references: [id], onDelete: Restrict)
-  importBatch ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  campaign    Campaign           @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+  lead        Lead               @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  importBatch ImportBatch?       @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  admission   DispatchAdmission?
 
   @@unique([campaignId, leadId])
   @@index([campaignId, status])
+  /// Scheduler candidate scan: oldest STAGED first, keyset-paged.
+  @@index([campaignId, status, createdAt, id])
   @@index([leadId])
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch admission (Phase 1 / Prompt 2)
+// ---------------------------------------------------------------------------
+
+enum TimezoneSource {
+  LEAD
+  CAMPAIGN
+}
+
+/// One row per STAGED → QUEUED admission. Records the decision that admitted
+/// the member and is the durable source for hourly capacity accounting.
+/// QUEUED means approved for sending; nothing has been sent.
+model DispatchAdmission {
+  id                    String         @id @default(uuid(7)) @db.Uuid
+  campaignId            String         @db.Uuid
+  /// UNIQUE: a membership can be admitted at most once.
+  campaignLeadId        String         @unique @db.Uuid
+  admittedAt            DateTime       @db.Timestamptz(3)
+  /// IANA zone used for the send-window decision.
+  timezone              String         @db.VarChar(64)
+  timezoneSource        TimezoneSource
+  /// Recipient local time (HH:MM) at admission.
+  localTime             String         @db.Char(5)
+  sendWindowStart       String         @db.Char(5)
+  sendWindowEnd         String         @db.Char(5)
+  hourlyLimit           Int
+  /// Admissions for this campaign already in the rolling hour before this one.
+  priorAdmissionsInHour Int
+  /// Background job that performed the admission, when there was one.
+  jobId                 String?        @db.VarChar(64)
+  createdAt             DateTime       @default(now()) @db.Timestamptz(3)
+
+  campaign     Campaign     @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+  campaignLead CampaignLead @relation(fields: [campaignLeadId], references: [id], onDelete: Restrict)
+
+  @@index([campaignId, admittedAt])
 }
 
 // ---------------------------------------------------------------------------

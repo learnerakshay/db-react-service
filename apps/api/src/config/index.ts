@@ -49,6 +49,25 @@ export interface AppConfig {
     /** PROCESSING imports older than this are presumed crashed. */
     staleAfterMs: number;
   };
+  dispatch: {
+    /** Maximum STAGED memberships examined per campaign per admission run. */
+    scanLimit: number;
+    pageSize: number;
+    transactionTimeoutMs: number;
+  };
+  jobs: {
+    /** Start pg-boss, the scheduler and workers in this process. */
+    workersEnabled: boolean;
+    /** pg-boss schema holding job tables (separate from Prisma's). */
+    schema: string;
+    schedulerCron: string;
+    pollingIntervalSeconds: number;
+    admissionRetryLimit: number;
+    admissionRetryDelaySeconds: number;
+    admissionExpireInSeconds: number;
+    /** Graceful stop budget; must stay below http.shutdownTimeoutMs. */
+    stopTimeoutMs: number;
+  };
 }
 
 export const SERVICE_NAME = 'cadentor-reactivation-api';
@@ -59,6 +78,17 @@ const SHUTDOWN_TIMEOUT_MS = 10_000;
 const IMPORT_MAX_RECORD_BYTES = 64 * 1024;
 const IMPORT_CHUNK_SIZE = 250;
 const IMPORT_STALE_AFTER_MS = 30 * 60_000;
+const DISPATCH_SCAN_LIMIT = 2000;
+const DISPATCH_PAGE_SIZE = 200;
+const DISPATCH_TRANSACTION_TIMEOUT_MS = 30_000;
+const JOBS_SCHEMA = 'pgboss';
+/** Every minute. pg-boss runs each occurrence once across all instances. */
+const SCHEDULER_CRON = '* * * * *';
+const JOB_POLLING_INTERVAL_SECONDS = 2;
+const ADMISSION_RETRY_LIMIT = 3;
+const ADMISSION_RETRY_DELAY_SECONDS = 15;
+const ADMISSION_EXPIRE_IN_SECONDS = 120;
+const JOB_STOP_TIMEOUT_MS = 8_000;
 
 export function loadConfig(source: Record<string, string | undefined>): AppConfig {
   const env = parseEnv(source);
@@ -99,6 +129,21 @@ export function loadConfig(source: Record<string, string | undefined>): AppConfi
       maxRecordBytes: IMPORT_MAX_RECORD_BYTES,
       chunkSize: IMPORT_CHUNK_SIZE,
       staleAfterMs: IMPORT_STALE_AFTER_MS,
+    },
+    dispatch: {
+      scanLimit: DISPATCH_SCAN_LIMIT,
+      pageSize: DISPATCH_PAGE_SIZE,
+      transactionTimeoutMs: DISPATCH_TRANSACTION_TIMEOUT_MS,
+    },
+    jobs: {
+      workersEnabled: env.JOB_WORKERS_ENABLED,
+      schema: JOBS_SCHEMA,
+      schedulerCron: SCHEDULER_CRON,
+      pollingIntervalSeconds: JOB_POLLING_INTERVAL_SECONDS,
+      admissionRetryLimit: ADMISSION_RETRY_LIMIT,
+      admissionRetryDelaySeconds: ADMISSION_RETRY_DELAY_SECONDS,
+      admissionExpireInSeconds: ADMISSION_EXPIRE_IN_SECONDS,
+      stopTimeoutMs: JOB_STOP_TIMEOUT_MS,
     },
   };
 }

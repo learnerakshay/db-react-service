@@ -45,8 +45,10 @@ behavior without reshaping configuration.
 
 - **Providers** (`src/providers/*`): provisional interfaces for messaging, AI,
   calendar, CRM, notifications. No adapters.
-- **Jobs** (`src/jobs/queue.ts`): `JobQueue` interface with idempotency keys,
-  delayed start and bounded retries — shaped to fit pg-boss. No implementation.
+- **Jobs** (`src/jobs/`): `JobQueue` interface (`queue.ts`) implemented with
+  pg-boss (`boss.ts`); `campaign-scheduler.ts` holds job names, queue
+  definitions, the minute tick and worker registration; `workers/` holds job
+  handlers. Started by `server.ts` only when `JOB_WORKERS_ENABLED=true`.
 - **Modules** (`src/modules/`): one directory per capability.
   - `leads/` — phone (libphonenumber) and email normalization, canonical lead
     input, lead resolution and merge rules.

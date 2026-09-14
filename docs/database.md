@@ -46,6 +46,8 @@ migration** to make sure none of them are dropped:
 - `ImportBatch_counts_check`
 - partial unique index `ImportBatch_contentHash_processing_key`
 - `ImportRowResult_reason_check`
+- `DispatchAdmission_capacity_check`, `DispatchAdmission_window_check`
+  (in `20260914103226_dispatch_admission/migration.sql`)
 
 ## Ingestion semantics
 
@@ -94,6 +96,49 @@ Rules:
   PROCESSING batch older than 30 minutes is presumed crashed and marked `FAILED` (`STALE_PROCESSING`).
 - Suppression added after a lead is staged is **not** retroactively applied to
   memberships; dispatch must re-check suppression before sending.
+
+## Dispatch admission (Phase 1 / Prompt 2)
+
+Models: `Campaign.statusChangedAt`; `DispatchAdmission` (one row per
+`STAGED → QUEUED`, UNIQUE `campaignLeadId`, index `campaignId, admittedAt`);
+index `CampaignLead(campaignId, status, createdAt, id)` for the candidate scan.
+
+Campaign lifecycle (`modules/campaigns/lifecycle.ts`):
+`DRAFT → ACTIVE`, `ACTIVE ⇄ PAUSED`, `ACTIVE|PAUSED → COMPLETED`. Activation
+re-validates the stored config.
+
+Eligibility (`modules/dispatch/eligibility.ts`), first failure wins:
+
+| Check                                   | Reason                     |
+| --------------------------------------- | -------------------------- |
+| campaign is ACTIVE                      | `CAMPAIGN_NOT_ACTIVE`      |
+| membership is STAGED                    | `INVALID_MEMBERSHIP_STATE` |
+| phone/email not in SuppressionEntry     | `SUPPRESSED`               |
+| lead timezone, else campaign `timezone` | `TIMEZONE_UNAVAILABLE`     |
+| local time in `[start, end)`            | `OUTSIDE_SEND_WINDOW`      |
+| rolling-hour capacity left              | `HOURLY_LIMIT_REACHED`     |
+
+Timezones are IANA names evaluated with the runtime ICU database (DST-aware).
+Campaign `timezone: null` means no fallback. Timezones are never inferred.
+
+Admission transaction (`modules/dispatch/admission.ts`):
+
+1. `SELECT … FROM "Campaign" … FOR UPDATE` — serializes runs per campaign;
+   pause/complete wait for a running admission and vice versa.
+2. Return unless ACTIVE.
+3. `LOCK TABLE "SuppressionEntry" IN SHARE MODE` — suppression inserts wait
+   until the admission commits, so the check cannot go stale mid-transaction.
+4. Count `DispatchAdmission` rows with `admittedAt > now − 1 hour`.
+5. Scan STAGED members oldest first (keyset pages, bounded by `scanLimit`),
+   admit via `transitionCampaignLead` + `DispatchAdmission`, move suppressed
+   members to `OPTED_OUT`, stop when capacity is used.
+
+The reference time is the database transaction timestamp, so all workers share
+one clock. Counters are rows in PostgreSQL; restarts change nothing.
+
+Scheduler: pg-boss cron `campaign-scheduler-tick` every minute enqueues one
+`campaign-admission` job per ACTIVE campaign (key = campaign id, queue policy
+`stately`). Retries are bounded (3, exponential backoff).
 
 ## Migration workflow
 

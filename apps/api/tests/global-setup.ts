@@ -1,4 +1,4 @@
-import EmbeddedPostgres from 'embedded-postgres';
+import type EmbeddedPostgres from 'embedded-postgres';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
@@ -29,7 +29,8 @@ export default async function setup(project: TestProject) {
   if (databaseUrl === '') {
     dataDir = await mkdtemp(join(tmpdir(), 'cadentor-test-pg-'));
     const port = await freePort();
-    server = new EmbeddedPostgres({
+    const EmbeddedPostgresServer = await loadEmbeddedPostgres();
+    server = new EmbeddedPostgresServer({
       databaseDir: dataDir,
       user: 'postgres',
       password: 'postgres',
@@ -72,6 +73,26 @@ export default async function setup(project: TestProject) {
     await server?.stop();
     if (dataDir !== undefined) await rm(dataDir, { recursive: true, force: true });
   };
+}
+
+/**
+ * embedded-postgres registers async-exit-hook on import. Its `beforeExit`
+ * handler calls `process.exit(0)`, replacing vitest's failing exit code with 0
+ * (CI would pass broken builds), and its `exit` handler throws
+ * "done is not a function" once `beforeExit` is gone. Teardown stops the server
+ * explicitly, so both handlers are removed; signal handlers stay.
+ */
+async function loadEmbeddedPostgres(): Promise<typeof EmbeddedPostgres> {
+  const beforeExit = new Set(process.listeners('beforeExit'));
+  const exit = new Set(process.listeners('exit'));
+  const { default: EmbeddedPostgresServer } = await import('embedded-postgres');
+  for (const listener of process.listeners('beforeExit')) {
+    if (!beforeExit.has(listener)) process.removeListener('beforeExit', listener);
+  }
+  for (const listener of process.listeners('exit')) {
+    if (!exit.has(listener)) process.removeListener('exit', listener);
+  }
+  return EmbeddedPostgresServer;
 }
 
 function freePort(): Promise<number> {

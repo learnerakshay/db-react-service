@@ -5,6 +5,7 @@ import { loadConfig, type AppConfig } from './config/index.js';
 import { createDatabase, databaseHealthCheck } from './db/client.js';
 import { ConfigurationError } from './lib/errors.js';
 import { createLogger } from './lib/logger.js';
+import { apiRouter } from './routes/api.js';
 
 // Repo-root .env (same relative depth from src/ and dist/). Real environment
 // variables take precedence over the file.
@@ -30,7 +31,12 @@ if (db === undefined) {
   logger.warn('DATABASE_URL is not set; database-backed features are unavailable');
 }
 
-const app = createApp({ config, logger, checkDatabase: databaseHealthCheck(db, logger) });
+const app = createApp({
+  config,
+  logger,
+  checkDatabase: databaseHealthCheck(db, logger),
+  api: db === undefined ? undefined : apiRouter({ db, config, logger }),
+});
 
 const server = app.listen(config.http.port, () => {
   logger.info({ port: config.http.port, nodeEnv: config.nodeEnv }, 'api listening');

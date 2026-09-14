@@ -1,9 +1,10 @@
 // Cadentor Service 4 — database schema.
-//
-// PHASE 0: infrastructure only. No domain models yet.
-// Lead, Campaign, Message, Suppression, Conversation, Booking and related
-// entities are introduced by the phase that owns them (Phase 1+).
 // Connection URL is configured in prisma.config.ts.
+//
+// Invariants that Prisma cannot express live in the migration SQL and are
+// documented in docs/database.md: CHECK constraints (E.164 phone, lowercase
+// email, suppression identity, import count totals), the partial unique index
+// on processing imports, and the append-only trigger on SuppressionEntry.
 
 generator client {
   provider            = "prisma-client"
@@ -14,4 +15,225 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Leads
+// ---------------------------------------------------------------------------
+
+/// Global lifecycle only. Campaign progress lives on CampaignLead.
+enum LeadStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+/// One record per real contact. Identity is the E.164 phone number.
+model Lead {
+  id                 String     @id @default(uuid(7)) @db.Uuid
+  /// E.164, e.g. +14155552671. Unique contact identity.
+  phone              String     @unique @db.VarChar(16)
+  /// Trimmed and lowercased. Not unique: households share addresses.
+  email              String?    @db.VarChar(254)
+  firstName          String?    @db.VarChar(100)
+  lastName           String?    @db.VarChar(100)
+  /// Source label from the first import that created this lead.
+  source             String     @db.VarChar(200)
+  externalId         String?    @db.VarChar(200)
+  lastServiceAt      DateTime?  @db.Date
+  /// IANA timezone, only when the source genuinely provided one.
+  timezone           String?    @db.VarChar(64)
+  status             LeadStatus @default(ACTIVE)
+  firstImportBatchId String?    @db.Uuid
+  createdAt          DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime   @updatedAt @db.Timestamptz(3)
+
+  firstImportBatch    ImportBatch?      @relation(fields: [firstImportBatchId], references: [id], onDelete: SetNull)
+  campaignMemberships CampaignLead[]
+  importRows          ImportRowResult[]
+
+  @@index([email])
+}
+
+// ---------------------------------------------------------------------------
+// Campaigns
+// ---------------------------------------------------------------------------
+
+enum CampaignStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  COMPLETED
+}
+
+model Campaign {
+  id        String         @id @default(uuid(7)) @db.Uuid
+  name      String         @db.VarChar(200)
+  status    CampaignStatus @default(DRAFT)
+  /// CampaignConfig snapshot (Zod-validated), fixed at creation so later
+  /// environment changes never alter a running campaign.
+  config    Json
+  createdAt DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime       @updatedAt @db.Timestamptz(3)
+
+  members       CampaignLead[]
+  importBatches ImportBatch[]
+}
+
+/// Campaign-specific lifecycle. Transitions are validated in
+/// apps/api/src/modules/campaigns/membership.ts — never assign status ad hoc.
+enum CampaignLeadStatus {
+  STAGED
+  QUEUED
+  STEP_1_SENT
+  STEP_2_SENT
+  ENGAGED
+  QUALIFIED
+  BOOKED
+  OPTED_OUT
+  DORMANT_ARCHIVED
+}
+
+model CampaignLead {
+  id              String             @id @default(uuid(7)) @db.Uuid
+  campaignId      String             @db.Uuid
+  leadId          String             @db.Uuid
+  status          CampaignLeadStatus @default(STAGED)
+  statusChangedAt DateTime           @default(now()) @db.Timestamptz(3)
+  importBatchId   String?            @db.Uuid
+  createdAt       DateTime           @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime           @updatedAt @db.Timestamptz(3)
+
+  campaign    Campaign     @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+  lead        Lead         @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  importBatch ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+
+  @@unique([campaignId, leadId])
+  @@index([campaignId, status])
+  @@index([leadId])
+}
+
+// ---------------------------------------------------------------------------
+// Suppression (global, permanent, append-only)
+// ---------------------------------------------------------------------------
+
+enum SuppressionReason {
+  OPT_OUT
+  DO_NOT_CONTACT
+  COMPLAINT
+  LEGAL
+  INVALID_CONTACT
+}
+
+enum SuppressionSource {
+  IMPORT
+  OPERATOR
+  INBOUND_MESSAGE
+  PROVIDER
+}
+
+/// At least one of phone/email is required (CHECK). Rows can never be updated
+/// or deleted (trigger). Suppression applies across every campaign.
+model SuppressionEntry {
+  id        String            @id @default(uuid(7)) @db.Uuid
+  phone     String?           @db.VarChar(16)
+  email     String?           @db.VarChar(254)
+  reason    SuppressionReason
+  source    SuppressionSource
+  /// External reference, e.g. provider message ID or ticket number.
+  reference String?           @db.VarChar(200)
+  note      String?           @db.VarChar(500)
+  createdAt DateTime          @default(now()) @db.Timestamptz(3)
+
+  @@index([phone])
+  @@index([email])
+}
+
+// ---------------------------------------------------------------------------
+// Imports
+// ---------------------------------------------------------------------------
+
+enum ImportSourceType {
+  CSV
+}
+
+enum ImportBatchStatus {
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+/// totalRows = acceptedCount + duplicateCount + suppressedCount + invalidCount
+/// + failedCount is enforced by a CHECK constraint.
+model ImportBatch {
+  id              String            @id @default(uuid(7)) @db.Uuid
+  sourceType      ImportSourceType
+  sourceReference String?           @db.VarChar(255)
+  sourceLabel     String            @db.VarChar(200)
+  /// SHA-256 of the uploaded content. Unique while PROCESSING (partial index).
+  contentHash     String            @db.Char(64)
+  defaultCountry  String?           @db.Char(2)
+  campaignId      String?           @db.Uuid
+  status          ImportBatchStatus @default(PROCESSING)
+  errorCode       String?           @db.VarChar(64)
+  totalRows       Int               @default(0)
+  /// CREATED + EXISTING rows.
+  acceptedCount   Int               @default(0)
+  /// CREATED rows (subset of accepted).
+  newLeadCount    Int               @default(0)
+  duplicateCount  Int               @default(0)
+  suppressedCount Int               @default(0)
+  invalidCount    Int               @default(0)
+  failedCount     Int               @default(0)
+  /// Campaign memberships created by this batch.
+  stagedCount     Int               @default(0)
+  startedAt       DateTime          @default(now()) @db.Timestamptz(3)
+  completedAt     DateTime?         @db.Timestamptz(3)
+
+  campaign      Campaign?         @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+  rows          ImportRowResult[]
+  createdLeads  Lead[]
+  campaignLeads CampaignLead[]
+
+  @@index([startedAt])
+}
+
+enum ImportRowOutcome {
+  CREATED
+  EXISTING
+  DUPLICATE
+  SUPPRESSED
+  INVALID
+  FAILED
+}
+
+enum ImportRowReason {
+  MALFORMED_ROW
+  MISSING_PHONE
+  INVALID_PHONE
+  PHONE_COUNTRY_REQUIRED
+  DUPLICATE_IN_BATCH
+  SUPPRESSED_PHONE
+  SUPPRESSED_EMAIL
+  PERSISTENCE_ERROR
+}
+
+/// One row per source row. No raw contact data is stored here.
+model ImportRowResult {
+  id            String           @id @default(uuid(7)) @db.Uuid
+  importBatchId String           @db.Uuid
+  /// 1-based data row number (header excluded, blank lines skipped).
+  rowNumber     Int
+  outcome       ImportRowOutcome
+  reason        ImportRowReason?
+  /// Optional input fields dropped because they were invalid.
+  ignoredFields String[]
+  leadId        String?          @db.Uuid
+  createdAt     DateTime         @default(now()) @db.Timestamptz(3)
+
+  importBatch ImportBatch @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
+  lead        Lead?       @relation(fields: [leadId], references: [id], onDelete: SetNull)
+
+  @@unique([importBatchId, rowNumber])
+  @@index([importBatchId, outcome])
+  @@index([leadId])
 }

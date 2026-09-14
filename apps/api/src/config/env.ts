@@ -9,11 +9,11 @@ const field = <T extends z.ZodType>(schema: T) => z.preprocess(blankToUndefined,
 
 const optionalString = field(z.string().trim().min(1).optional());
 
-const timeOfDay = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'must be HH:MM in 24h time');
+export const timeOfDay = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'must be HH:MM in 24h time');
 
-const timezone = z.string().refine(isValidTimeZone, 'must be a valid IANA timezone');
+export const timezone = z.string().refine(isValidTimeZone, 'must be a valid IANA timezone');
 
-function isValidTimeZone(value: string): boolean {
+export function isValidTimeZone(value: string): boolean {
   try {
     new Intl.DateTimeFormat('en-US', { timeZone: value });
     return true;
@@ -54,6 +54,16 @@ export const envSchema = z
     CAMPAIGN_FOLLOW_UP_DELAY_HOURS: field(z.coerce.number().positive().default(48)),
     CAMPAIGN_ARCHIVE_DELAY_DAYS: field(z.coerce.number().positive().default(14)),
     CLASSIFIER_CONFIDENCE_THRESHOLD: field(z.coerce.number().min(0).max(1).default(0.8)),
+
+    // Lead imports.
+    IMPORT_MAX_FILE_BYTES: field(
+      z.coerce
+        .number()
+        .int()
+        .positive()
+        .max(100 * 1024 * 1024)
+        .default(10 * 1024 * 1024),
+    ),
   })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV === 'production') {

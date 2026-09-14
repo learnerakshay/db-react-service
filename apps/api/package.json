@@ -14,16 +14,21 @@
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.0",
     "@prisma/client": "^7.10.0",
+    "busboy": "^1.6.0",
     "cors": "^2.8.6",
+    "csv-parse": "^7.0.2",
     "express": "^5.2.1",
     "helmet": "^8.3.0",
+    "libphonenumber-js": "^1.13.13",
     "pino": "^10.3.1",
     "pino-http": "^11.0.0",
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@types/busboy": "^1.5.4",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
+    "embedded-postgres": "18.4.0-beta.17",
     "tsx": "^4.23.13",
     "vitest": "^5.0.0"
   }

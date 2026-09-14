@@ -1,9 +1,12 @@
 import type { DependencyStatus } from '@cadentor/shared';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { PrismaClient } from '../generated/prisma/client.js';
+import { PrismaClient, type Prisma } from '../generated/prisma/client.js';
 import type { Logger } from '../lib/logger.js';
 
 export type Database = PrismaClient;
+
+/** Either the root client or an interactive transaction client. */
+export type DbClient = PrismaClient | Prisma.TransactionClient;
 
 const CONNECTION_TIMEOUT_MS = 5_000;
 

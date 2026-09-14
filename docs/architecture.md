@@ -47,8 +47,30 @@ behavior without reshaping configuration.
   calendar, CRM, notifications. No adapters.
 - **Jobs** (`src/jobs/queue.ts`): `JobQueue` interface with idempotency keys,
   delayed start and bounded retries — shaped to fit pg-boss. No implementation.
-- **Modules** (`src/modules/`): empty; each Phase 1+ capability gets a directory
-  with its own services and transition rules.
+- **Modules** (`src/modules/`): one directory per capability.
+  - `leads/` — phone (libphonenumber) and email normalization, canonical lead
+    input, lead resolution and merge rules.
+  - `suppression/` — global append-only suppression list.
+  - `campaigns/` — campaign creation, config snapshot, membership staging and
+    the CampaignLead transition map.
+  - `imports/` — canonical ingestion service, CSV adapter, batch lifecycle.
+
+## Ingestion (Phase 1 / Prompt 1)
+
+```text
+POST /api/v1/imports/csv (multipart)
+  → lib/upload.ts            stream to temp file, SHA-256, size limit
+  → imports/csv.ts           full syntax check, header mapping, streamed rows
+  → imports/ingestion.ts     normalize → dedupe → suppression → resolve lead
+                             → stage → record outcome   (chunked transactions)
+  → imports/batches.ts       batch lifecycle, summary + issues
+GET  /api/v1/imports/:id
+POST /api/v1/campaigns
+```
+
+Adapters (CSV today; CRM/Sheets later) only map their source into canonical
+`SourceRow`s. All hygiene rules live in the ingestion service. Details and
+guarantees: [database.md](database.md).
 
 ## Error model
 

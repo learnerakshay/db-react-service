@@ -40,6 +40,15 @@ export interface AppConfig {
   classifier: {
     confidenceThreshold: number;
   };
+  imports: {
+    maxFileBytes: number;
+    /** Largest single CSV record accepted. */
+    maxRecordBytes: number;
+    /** Rows written per database transaction. */
+    chunkSize: number;
+    /** PROCESSING imports older than this are presumed crashed. */
+    staleAfterMs: number;
+  };
 }
 
 export const SERVICE_NAME = 'cadentor-reactivation-api';
@@ -47,6 +56,9 @@ export const SERVICE_NAME = 'cadentor-reactivation-api';
 const DEV_WEB_URL = 'http://localhost:5173';
 const JSON_BODY_LIMIT = '100kb';
 const SHUTDOWN_TIMEOUT_MS = 10_000;
+const IMPORT_MAX_RECORD_BYTES = 64 * 1024;
+const IMPORT_CHUNK_SIZE = 250;
+const IMPORT_STALE_AFTER_MS = 30 * 60_000;
 
 export function loadConfig(source: Record<string, string | undefined>): AppConfig {
   const env = parseEnv(source);
@@ -82,5 +94,11 @@ export function loadConfig(source: Record<string, string | undefined>): AppConfi
       archiveDelayDays: env.CAMPAIGN_ARCHIVE_DELAY_DAYS,
     },
     classifier: { confidenceThreshold: env.CLASSIFIER_CONFIDENCE_THRESHOLD },
+    imports: {
+      maxFileBytes: env.IMPORT_MAX_FILE_BYTES,
+      maxRecordBytes: IMPORT_MAX_RECORD_BYTES,
+      chunkSize: IMPORT_CHUNK_SIZE,
+      staleAfterMs: IMPORT_STALE_AFTER_MS,
+    },
   };
 }

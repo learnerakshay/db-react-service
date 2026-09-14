@@ -13,16 +13,17 @@ This file governs all Claude Code work in this repository. Read it before every 
 
 ## Phase registry
 
-| Phase                                                   | Status                              |
-| ------------------------------------------------------- | ----------------------------------- |
-| PHASE 0 — Foundation                                    | COMPLETE — awaiting freeze sign-off |
-| PHASE 1 — Data Pipeline + Campaign Queue                | NOT STARTED                         |
-| PHASE 2 — Messaging + Reply Intelligence                | NOT STARTED                         |
-| PHASE 3 — Conversion / Booking + Operational Automation | NOT STARTED                         |
-| PHASE 4 — Mission Control + Production Hardening        | NOT STARTED                         |
-| ENVIRONMENT VERIFICATION                                | NOT STARTED                         |
-| DEMO / PROOF                                            | NOT STARTED                         |
-| CLIENT DEPLOYMENT                                       | NOT STARTED                         |
+| Phase                                                                 | Status                              |
+| --------------------------------------------------------------------- | ----------------------------------- |
+| PHASE 0 — Foundation                                                  | COMPLETE / VERIFIED / FROZEN        |
+| PHASE 1 / Prompt 1 — Data Foundation + Ingestion                      | COMPLETE — awaiting freeze sign-off |
+| PHASE 1 / Prompt 2 — Campaign Queue, Throttling, Dispatch Eligibility | NOT STARTED                         |
+| PHASE 2 — Messaging + Reply Intelligence                              | NOT STARTED                         |
+| PHASE 3 — Conversion / Booking + Operational Automation               | NOT STARTED                         |
+| PHASE 4 — Mission Control + Production Hardening                      | NOT STARTED                         |
+| ENVIRONMENT VERIFICATION                                              | NOT STARTED                         |
+| DEMO / PROOF                                                          | NOT STARTED                         |
+| CLIENT DEPLOYMENT                                                     | NOT STARTED                         |
 
 Only the phase explicitly authorized by the user is active. Update this table
 only when the user confirms a status change.
@@ -88,6 +89,13 @@ apps/web  ──HTTP──▶  apps/api routes (Express only here)
 - Lifecycle status changes (lead, campaign, message, conversation, booking)
   happen **only** inside the owning module's service functions, which validate
   the transition against an explicit allowed-transition map.
+- `CampaignLead.status` changes only through `transitionCampaignLead`
+  (`apps/api/src/modules/campaigns/membership.ts`); new edges need tests.
+- Suppression is global and append-only (DB trigger). Anything that sends must
+  re-check suppression immediately before the send, not rely on staging-time checks.
+- Hand-written SQL invariants (CHECKs, partial unique index, trigger) are not
+  tracked by Prisma drift detection; review every generated migration so none
+  are dropped (see `docs/database.md`).
 - Never write `status = ...` ad hoc in routes, jobs, adapters or scripts.
 - Transitions that trigger side effects record an audit entry.
 
@@ -133,7 +141,10 @@ External Service
   done: suppression, retries, state transitions, webhook idempotency, booking,
   campaign dispatch, rate limits and send windows.
 - Database-backed tests use a dedicated test database (see `docs/database.md`),
-  never the development database.
+  never the development database. `npm run test` starts a throwaway embedded
+  PostgreSQL automatically; set `TEST_DATABASE_URL` (database name containing
+  `test`) to use an existing server. Never mock the database in tests whose
+  purpose is a constraint, race, or transaction guarantee.
 - Every phase ends with `npm run lint`, `npm run typecheck`, `npm run test` and
   `npm run build` passing.
 
@@ -175,5 +186,6 @@ npm run test
 npm run lint
 npm run typecheck
 npm run check:secrets
+npm run db:local     # local PostgreSQL on :54329 without Docker (dev only)
 npm run db:migrate   # prisma migrate dev (requires DATABASE_URL)
 ```

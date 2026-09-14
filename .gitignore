@@ -15,6 +15,9 @@ apps/api/src/generated/
 # Test output
 coverage/
 
+# Local development database (scripts/local-db.mjs)
+.local/
+
 # Logs and temporary files
 *.log
 npm-debug.log*

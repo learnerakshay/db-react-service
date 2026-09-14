@@ -1,0 +1,42 @@
+{
+  "name": "cadentor-service-4",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Cadentor Service 4 — Dormant Lead & Database Reactivation Engine",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "workspaces": [
+    "packages/shared",
+    "apps/api",
+    "apps/web"
+  ],
+  "scripts": {
+    "postinstall": "npm run build -w @cadentor/shared && npm run db:generate",
+    "dev": "npm run build -w @cadentor/shared && concurrently -n shared,api,web -c gray,blue,magenta \"npm run dev -w @cadentor/shared\" \"npm run dev -w @cadentor/api\" \"npm run dev -w @cadentor/web\"",
+    "build": "npm run build -w @cadentor/shared && npm run build -w @cadentor/api && npm run build -w @cadentor/web",
+    "start": "npm run start -w @cadentor/api",
+    "test": "npm run build -w @cadentor/shared && npm run test --workspaces --if-present",
+    "lint": "eslint .",
+    "typecheck": "npm run build -w @cadentor/shared && tsc -p tsconfig.json && npm run typecheck --workspaces --if-present",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check:secrets": "node scripts/check-secrets.mjs",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:status": "prisma migrate status"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.13.4",
+    "concurrently": "^10.0.5",
+    "eslint": "^10.10.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "prettier": "^3.9.6",
+    "prisma": "^7.10.0",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.70.0"
+  }
+}

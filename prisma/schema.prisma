@@ -1,0 +1,17 @@
+// Cadentor Service 4 — database schema.
+//
+// PHASE 0: infrastructure only. No domain models yet.
+// Lead, Campaign, Message, Suppression, Conversation, Booking and related
+// entities are introduced by the phase that owns them (Phase 1+).
+// Connection URL is configured in prisma.config.ts.
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../apps/api/src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}

@@ -1,0 +1,86 @@
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { createApp } from './app.js';
+import { loadConfig, type AppConfig } from './config/index.js';
+import { createDatabase, databaseHealthCheck } from './db/client.js';
+import { ConfigurationError } from './lib/errors.js';
+import { createLogger } from './lib/logger.js';
+
+// Repo-root .env (same relative depth from src/ and dist/). Real environment
+// variables take precedence over the file.
+const envFile = fileURLToPath(new URL('../../../.env', import.meta.url));
+if (existsSync(envFile)) {
+  process.loadEnvFile(envFile);
+}
+
+let config: AppConfig;
+try {
+  config = loadConfig(process.env);
+} catch (err) {
+  if (err instanceof ConfigurationError) {
+    process.stderr.write(`[startup] ${err.message}\n`);
+    process.exit(1);
+  }
+  throw err;
+}
+
+const logger = createLogger(config.logLevel);
+const db = config.database.url === undefined ? undefined : createDatabase(config.database.url);
+if (db === undefined) {
+  logger.warn('DATABASE_URL is not set; database-backed features are unavailable');
+}
+
+const app = createApp({ config, logger, checkDatabase: databaseHealthCheck(db, logger) });
+
+const server = app.listen(config.http.port, () => {
+  logger.info({ port: config.http.port, nodeEnv: config.nodeEnv }, 'api listening');
+});
+
+server.on('error', (err) => {
+  logger.fatal({ err }, 'http server error');
+  void shutdown('serverError', 1);
+});
+
+let shuttingDown = false;
+
+async function shutdown(reason: string, exitCode = 0): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info({ reason }, 'shutting down');
+
+  const forceExit = setTimeout(() => {
+    logger.error({ timeoutMs: config.http.shutdownTimeoutMs }, 'graceful shutdown timed out');
+    process.exit(1);
+  }, config.http.shutdownTimeoutMs);
+  forceExit.unref();
+
+  let code = exitCode;
+  try {
+    if (server.listening) {
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+    }
+    // Future: stop the job queue here, before disconnecting the database.
+    await db?.$disconnect();
+    logger.info('shutdown complete');
+  } catch (err) {
+    logger.error({ err }, 'error during shutdown');
+    code = 1;
+  }
+  process.exit(code);
+}
+
+process.on('SIGINT', () => void shutdown('SIGINT'));
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
+process.on('unhandledRejection', (reason) => {
+  logger.fatal({ err: reason }, 'unhandled promise rejection');
+  void shutdown('unhandledRejection', 1);
+});
+process.on('uncaughtException', (err) => {
+  logger.fatal({ err }, 'uncaught exception');
+  void shutdown('uncaughtException', 1);
+});

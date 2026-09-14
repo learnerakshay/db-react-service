@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Environment (only the example file is tracked)
+.env
+.env.*
+!.env.example
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+apps/api/src/generated/
+
+# Test output
+coverage/
+
+# Logs and temporary files
+*.log
+npm-debug.log*
+tmp/
+.tmp/
+*.tmp
+
+# Editor / OS noise
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -50,6 +50,8 @@ model Lead {
   firstImportBatch    ImportBatch?      @relation(fields: [firstImportBatchId], references: [id], onDelete: SetNull)
   campaignMemberships CampaignLead[]
   importRows          ImportRowResult[]
+  messages            Message[]
+  replyProcessings    ReplyProcessing[]
 
   @@index([email])
 }
@@ -80,6 +82,8 @@ model Campaign {
   members       CampaignLead[]
   importBatches ImportBatch[]
   admissions    DispatchAdmission[]
+  messages      Message[]
+  knowledgeItems KnowledgeItem[]
 
   @@index([status])
 }
@@ -112,12 +116,16 @@ model CampaignLead {
   lead        Lead               @relation(fields: [leadId], references: [id], onDelete: Restrict)
   importBatch ImportBatch?       @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
   admission   DispatchAdmission?
+  messages    Message[]
+  replyProcessings ReplyProcessing[]
 
   @@unique([campaignId, leadId])
   @@index([campaignId, status])
   /// Scheduler candidate scan: oldest STAGED first, keyset-paged.
   @@index([campaignId, status, createdAt, id])
   @@index([leadId])
+  /// Outbound dispatch scan: oldest QUEUED first.
+  @@index([status, statusChangedAt])
 }
 
 // ---------------------------------------------------------------------------
@@ -282,4 +290,262 @@ model ImportRowResult {
   @@unique([importBatchId, rowNumber])
   @@index([importBatchId, outcome])
   @@index([leadId])
+}
+
+// ---------------------------------------------------------------------------
+// Messaging (Phase 2 / Prompt 1)
+// ---------------------------------------------------------------------------
+
+enum MessageDirection {
+  OUTBOUND
+  INBOUND
+}
+
+enum MessageChannel {
+  SMS
+}
+
+enum MessagePurpose {
+  CAMPAIGN_STEP_1
+  INBOUND_REPLY
+  /// Automated reply to one inbound message (Phase 2 / Prompt 2).
+  CONVERSATIONAL_REPLY
+}
+
+/// Outbound: PENDING → SENDING → ACCEPTED → SENT → DELIVERED, or FAILED,
+/// UNCERTAIN (provider outcome unknown; never resent automatically) or
+/// CANCELLED (stopped before the provider was called). Inbound: RECEIVED.
+/// ACCEPTED means the provider took the message, not that it was delivered.
+enum MessageStatus {
+  PENDING
+  SENDING
+  ACCEPTED
+  SENT
+  DELIVERED
+  FAILED
+  UNCERTAIN
+  CANCELLED
+  RECEIVED
+}
+
+/// How an inbound message was associated with campaign context.
+enum InboundResolution {
+  /// Exactly one campaign membership was messaged from the receiving number.
+  MATCHED
+  /// Several memberships qualify; left for later resolution, never guessed.
+  AMBIGUOUS_CAMPAIGN
+  /// Known lead, but no outbound campaign message from the receiving number.
+  NO_CAMPAIGN
+  UNKNOWN_SENDER
+}
+
+enum SafetyAction {
+  HARD_OPT_OUT
+}
+
+/// One row per SMS in either direction. Constraints in the migration SQL.
+model Message {
+  id                String             @id @default(uuid(7)) @db.Uuid
+  direction         MessageDirection
+  channel           MessageChannel     @default(SMS)
+  purpose           MessagePurpose
+  status            MessageStatus
+  provider          String             @db.VarChar(32)
+  providerMessageId String?            @db.VarChar(64)
+  leadId            String?            @db.Uuid
+  campaignId        String?            @db.Uuid
+  campaignLeadId    String?            @db.Uuid
+  fromNumber        String             @db.VarChar(32)
+  toNumber          String             @db.VarChar(32)
+  /// Final rendered/received text. Null only for outbound sends cancelled before rendering.
+  body              String?            @db.VarChar(1600)
+  /// Logical send identity (`<campaignLeadId>:<purpose>`). UNIQUE: one logical send.
+  sendKey           String?            @unique @db.VarChar(80)
+  inboundResolution InboundResolution?
+  safetyAction      SafetyAction?
+  /// Provider error code or internal cancellation reason.
+  errorCode         String?            @db.VarChar(64)
+  sendingStartedAt  DateTime?          @db.Timestamptz(3)
+  acceptedAt        DateTime?          @db.Timestamptz(3)
+  sentAt            DateTime?          @db.Timestamptz(3)
+  deliveredAt       DateTime?          @db.Timestamptz(3)
+  failedAt          DateTime?          @db.Timestamptz(3)
+  receivedAt        DateTime?          @db.Timestamptz(3)
+  createdAt         DateTime           @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime           @updatedAt @db.Timestamptz(3)
+
+  lead          Lead?                  @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  campaign      Campaign?              @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+  campaignLead  CampaignLead?          @relation(fields: [campaignLeadId], references: [id], onDelete: Restrict)
+  webhookEvents ProviderWebhookEvent[]
+  /// Processing record when this is an inbound message.
+  replyProcessing    ReplyProcessing? @relation("ReplyProcessingInbound")
+  /// Processing record that produced this message when it is an automated reply.
+  producedByProcessing ReplyProcessing? @relation("ReplyProcessingReply")
+
+  @@unique([provider, providerMessageId])
+  /// Reply processing scan: unprocessed inbound messages, oldest first.
+  @@index([direction, createdAt])
+  @@index([leadId, createdAt])
+  @@index([campaignLeadId])
+  @@index([status, sendingStartedAt])
+}
+
+enum WebhookEventKind {
+  INBOUND_MESSAGE
+  DELIVERY_STATUS
+}
+
+enum WebhookEventOutcome {
+  PROCESSED
+  /// Older or equal to the message's current delivery state; ignored.
+  STALE
+  /// No message with this provider id (e.g. send outcome was UNCERTAIN).
+  UNKNOWN_MESSAGE
+  /// A provider status this service does not track.
+  IGNORED
+}
+
+/// Durable webhook idempotency and audit. Stores identifiers and status only,
+/// never the raw provider payload.
+model ProviderWebhookEvent {
+  id                String              @id @default(uuid(7)) @db.Uuid
+  provider          String              @db.VarChar(32)
+  /// Deterministic key from provider identifiers; UNIQUE per provider.
+  eventKey          String              @db.VarChar(160)
+  kind              WebhookEventKind
+  providerMessageId String              @db.VarChar(64)
+  providerStatus    String?             @db.VarChar(32)
+  errorCode         String?             @db.VarChar(64)
+  outcome           WebhookEventOutcome
+  messageId         String?             @db.Uuid
+  receivedAt        DateTime            @db.Timestamptz(3)
+
+  message Message? @relation(fields: [messageId], references: [id], onDelete: SetNull)
+
+  @@unique([provider, eventKey])
+  @@index([messageId])
+}
+
+// ---------------------------------------------------------------------------
+// Reply intelligence (Phase 2 / Prompt 2)
+// ---------------------------------------------------------------------------
+
+enum IntentClassification {
+  POSITIVE_INTEREST
+  SPECIFIC_QUESTION
+  NOT_INTERESTED
+  HARD_OPT_OUT
+  AMBIGUOUS
+}
+
+enum ReplyProcessingStatus {
+  /// Claimed by a worker (claimedAt); reclaimable once stale.
+  PROCESSING
+  /// Transient AI failure; will be retried up to the attempt limit.
+  RETRY
+  COMPLETED
+  /// Needs a human. No semantic action beyond the recorded one was taken.
+  ESCALATED
+  /// Already handled deterministically (exact hard opt-out); AI not called.
+  SKIPPED
+}
+
+/// The deterministic action the router chose. Never chosen by the model.
+enum ReplyAction {
+  OPT_OUT
+  ENGAGE
+  ANSWER_QUESTION
+  CLOSE_DECLINED
+  CLARIFY
+  HUMAN_REVIEW
+}
+
+enum EscalationReason {
+  LOW_CONFIDENCE
+  UNKNOWN_SENDER
+  AMBIGUOUS_CAMPAIGN
+  NO_CAMPAIGN
+  CONVERSATION_CLOSED
+  AWAITING_HUMAN_REVIEW
+  NO_REPLY_TEMPLATE
+  AMBIGUOUS_REPLY
+  MISSING_KNOWLEDGE
+  UNGROUNDED_ANSWER
+  INVALID_AI_OUTPUT
+  AI_UNAVAILABLE
+  LEAD_SUPPRESSED
+  INBOUND_TOO_OLD
+}
+
+/// One logical processing run per inbound message (UNIQUE inboundMessageId).
+/// Stores the validated analysis and the routed outcome, never model reasoning.
+model ReplyProcessing {
+  id               String                @id @default(uuid(7)) @db.Uuid
+  inboundMessageId String                @unique @db.Uuid
+  leadId           String?               @db.Uuid
+  campaignLeadId   String?               @db.Uuid
+  status           ReplyProcessingStatus
+  /// Claim counter; a worker may only record results for its own attempt.
+  attempts         Int                   @default(1)
+  claimedAt        DateTime              @db.Timestamptz(3)
+  classification   IntentClassification?
+  confidence       Float?
+  preferredTime    String?               @db.VarChar(200)
+  specificQuery    String?               @db.VarChar(500)
+  action           ReplyAction?
+  escalationReason EscalationReason?
+  /// Approved knowledge items the answer was grounded on.
+  knowledgeItemIds String[]
+  aiProvider       String?               @db.VarChar(32)
+  aiModel          String?               @db.VarChar(100)
+  aiRequestIds     String[]
+  /// The automated reply this processing created, if any.
+  replyMessageId   String?               @unique @db.Uuid
+  errorCode        String?               @db.VarChar(64)
+  completedAt      DateTime?             @db.Timestamptz(3)
+  createdAt        DateTime              @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime              @updatedAt @db.Timestamptz(3)
+
+  inboundMessage Message       @relation("ReplyProcessingInbound", fields: [inboundMessageId], references: [id], onDelete: Restrict)
+  replyMessage   Message?      @relation("ReplyProcessingReply", fields: [replyMessageId], references: [id], onDelete: Restrict)
+  lead           Lead?         @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  campaignLead   CampaignLead? @relation(fields: [campaignLeadId], references: [id], onDelete: Restrict)
+
+  @@index([status, claimedAt])
+  @@index([leadId, status])
+  @@index([campaignLeadId, action])
+}
+
+enum KnowledgeCategory {
+  BUSINESS_PROFILE
+  SERVICES
+  PRICING
+  HOURS
+  LOCATION
+  ELIGIBILITY
+  POLICY
+  INSURANCE
+  FAQ
+  APPROVED_CLAIM
+  BOOKING_PROCESS
+}
+
+/// Operator-approved business fact. The only source for grounded answers.
+model KnowledgeItem {
+  id         String            @id @default(uuid(7)) @db.Uuid
+  /// Null = applies to every campaign.
+  campaignId String?           @db.Uuid
+  category   KnowledgeCategory
+  question   String?           @db.VarChar(300)
+  content    String            @db.VarChar(2000)
+  /// Lowercase retrieval hints supplied by the operator.
+  keywords   String[]
+  active     Boolean           @default(true)
+  createdAt  DateTime          @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime          @updatedAt @db.Timestamptz(3)
+
+  campaign Campaign? @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+
+  @@index([active, campaignId])
 }

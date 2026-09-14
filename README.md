@@ -1,8 +1,9 @@
 # Cadentor — Service 4: Dormant Lead & Database Reactivation Engine
 
-> **Current status: PHASE 1 — DATA PIPELINE + CAMPAIGN QUEUE**
-> Lead ingestion, suppression, campaign lifecycle, recipient-time eligibility, hourly
-> throttling and queue admission (`QUEUED`) are implemented. No messages are sent yet.
+> **Current status: PHASE 2 — MESSAGING + REPLY INTELLIGENCE**
+> Lead ingestion, suppression, campaign scheduling and throttling, Step 1 SMS through
+> Twilio, signed webhooks, intent classification, grounded answers from approved
+> knowledge and human escalation are implemented. Booking and CRM are not.
 
 ## Purpose
 
@@ -134,6 +135,22 @@ Endpoints:
 - `GET /api/v1/imports/:id` — import summary with per-row issues
 - `GET /api/v1/campaigns/:id` — status, config, member counts per status, hourly usage
 - `POST /api/v1/campaigns/:id/start | pause | resume | complete` — lifecycle actions
+- `POST /api/v1/webhooks/messaging/twilio/inbound` — Twilio inbound SMS (signed)
+- `POST /api/v1/webhooks/messaging/twilio/status` — Twilio delivery callbacks (signed)
+- `POST /api/v1/knowledge` — add an approved business fact
+  (`{ "campaignId"?: uuid, "category": "PRICING", "content": "...", "keywords"?: [...] }`)
+- `GET /api/v1/knowledge?campaignId=` · `POST /api/v1/knowledge/:id/deactivate`
+
+Automated replies need `OPENAI_API_KEY` and `OPENAI_MODEL`, plus reply texts per
+campaign: `"messages": { "replies": { "positive": "...", "decline": "...", "clarify": "...", "handoff": "..." } }`.
+Questions are answered only from approved knowledge; anything uncertain is
+escalated for human review.
+
+Step 1 copy is set per campaign at creation, e.g.
+`"config": { "messages": { "step1": { "body": "Hey {{firstName}}, are you still looking to {{outcome}}?", "variables": { "outcome": "get your gutters cleaned" }, "fallbacks": { "firstName": "there" } } } }`.
+Outbound sending requires `SMS_PROVIDER=twilio` with `SMS_ACCOUNT_ID`,
+`SMS_AUTH_TOKEN`, `SMS_FROM_NUMBER`, and `API_URL` set to the public URL Twilio
+calls.
 
 Background jobs (pg-boss, same PostgreSQL) start with the API unless
 `JOB_WORKERS_ENABLED=false`. Every minute the scheduler admits eligible
@@ -155,8 +172,10 @@ npm run test -w @cadentor/web
 
 **PHASE 0 — FOUNDATION:** complete, verified, frozen.
 **PHASE 1 / PROMPT 1 — DATA FOUNDATION + INGESTION:** complete, verified, frozen.
-**PHASE 1 / PROMPT 2 — CAMPAIGN QUEUE + THROTTLING:** complete, awaiting freeze sign-off.
-Next: **PHASE 2 / PROMPT 1 — Outbound Messaging Provider + Inbound Webhook Foundation.**
+**PHASE 1 / PROMPT 2 — CAMPAIGN QUEUE + THROTTLING:** complete, verified, frozen.
+**PHASE 2 / PROMPT 1 — MESSAGING + WEBHOOK FOUNDATION:** complete, verified, frozen.
+**PHASE 2 / PROMPT 2 — REPLY INTELLIGENCE:** complete, awaiting freeze sign-off.
+Next: **PHASE 3 / PROMPT 1 — Qualification + Booking Conversion Engine.**
 See [CLAUDE.md](CLAUDE.md) for the phase registry.
 #   d b - r e a c t - s e r v i c e 
  

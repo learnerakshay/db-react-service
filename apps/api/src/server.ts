@@ -9,9 +9,22 @@ import {
   registerCampaignWorkers,
   scheduleCampaignScheduler,
 } from './jobs/campaign-scheduler.js';
+import {
+  outboundJobQueues,
+  registerOutboundWorkers,
+  scheduleOutboundDispatch,
+} from './jobs/outbound-dispatch.js';
 import type { JobQueue } from './jobs/queue.js';
+import {
+  enqueueInboundProcessing,
+  registerReplyWorkers,
+  replyJobQueues,
+  scheduleReplyProcessing,
+} from './jobs/reply-processing.js';
 import { ConfigurationError } from './lib/errors.js';
 import { createLogger } from './lib/logger.js';
+import { createConfiguredAi } from './providers/ai/registry.js';
+import { createConfiguredMessaging, statusCallbackUrl } from './providers/messaging/registry.js';
 import { apiRouter } from './routes/api.js';
 
 // Repo-root .env (same relative depth from src/ and dist/). Real environment
@@ -38,8 +51,21 @@ if (db === undefined) {
   logger.warn('DATABASE_URL is not set; database-backed features are unavailable');
 }
 
+const messaging = createConfiguredMessaging(config);
+if (messaging === undefined) {
+  logger.warn('SMS_PROVIDER is not set; outbound messaging and messaging webhooks are disabled');
+}
+const ai = createConfiguredAi(config);
+if (messaging !== undefined && ai === undefined) {
+  logger.warn(
+    'OPENAI_API_KEY is not set; inbound replies are stored but not classified or answered',
+  );
+}
+
 let queue: JobQueue | undefined;
+let onInboundMessage: ((messageId: string) => Promise<void>) | undefined;
 if (db !== undefined && config.database.url !== undefined && config.jobs.workersEnabled) {
+  const replyProcessingEnabled = messaging !== undefined && ai !== undefined;
   const deps = {
     db,
     logger,
@@ -51,7 +77,11 @@ if (db !== undefined && config.database.url !== undefined && config.jobs.workers
         pollingIntervalSeconds: config.jobs.pollingIntervalSeconds,
         stopTimeoutMs: config.jobs.stopTimeoutMs,
         schedule: true,
-        queues: campaignJobQueues(config.jobs),
+        queues: [
+          ...campaignJobQueues(config.jobs),
+          ...(messaging === undefined ? [] : outboundJobQueues(config.messaging)),
+          ...(replyProcessingEnabled ? replyJobQueues(config.replies) : []),
+        ],
       },
       logger,
     ),
@@ -61,6 +91,39 @@ if (db !== undefined && config.database.url !== undefined && config.jobs.workers
     await queue.start();
     await registerCampaignWorkers(deps);
     await scheduleCampaignScheduler(deps);
+    if (messaging !== undefined) {
+      const outbound = {
+        db,
+        logger,
+        provider: messaging.provider,
+        fromNumber: messaging.fromNumber,
+        statusCallbackUrl: statusCallbackUrl(config, messaging.provider.name),
+        sendingStaleAfterMs: config.messaging.sendingStaleAfterMs,
+        transactionTimeoutMs: config.messaging.transactionTimeoutMs,
+      };
+      const outboundDeps = { queue: deps.queue, logger, messaging: config.messaging, outbound };
+      await registerOutboundWorkers(outboundDeps);
+      await scheduleOutboundDispatch(outboundDeps);
+
+      if (ai !== undefined) {
+        const replyJobs = {
+          queue: deps.queue,
+          logger,
+          replyDeps: {
+            db,
+            ai,
+            outbound,
+            logger,
+            confidenceThreshold: config.classifier.confidenceThreshold,
+            replies: config.replies,
+          },
+        };
+        await registerReplyWorkers(replyJobs);
+        await scheduleReplyProcessing(replyJobs);
+        const jobQueue = deps.queue;
+        onInboundMessage = (messageId) => enqueueInboundProcessing(jobQueue, messageId);
+      }
+    }
   } catch (err) {
     logger.fatal({ err, operation: 'jobs.start' }, 'background jobs failed to start');
     await queue.stop().catch(() => undefined);
@@ -75,7 +138,18 @@ const app = createApp({
   config,
   logger,
   checkDatabase: databaseHealthCheck(db, logger),
-  api: db === undefined ? undefined : apiRouter({ db, config, logger }),
+  api:
+    db === undefined
+      ? undefined
+      : apiRouter({
+          db,
+          config,
+          logger,
+          ...(messaging === undefined
+            ? {}
+            : { messagingProviders: new Map([[messaging.provider.name, messaging.provider]]) }),
+          ...(onInboundMessage === undefined ? {} : { onInboundMessage }),
+        }),
 });
 
 const server = app.listen(config.http.port, () => {

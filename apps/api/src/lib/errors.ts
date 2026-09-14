@@ -48,6 +48,13 @@ export class NotFoundError extends AppError {
   }
 }
 
+/** Request authenticity could not be established (e.g. bad webhook signature). */
+export class ForbiddenError extends AppError {
+  constructor(message = 'Forbidden') {
+    super('FORBIDDEN', 403, message, { expose: true });
+  }
+}
+
 export class ConflictError extends AppError {
   constructor(message: string, cause?: unknown) {
     super('CONFLICT', 409, message, { expose: true, cause });
@@ -86,6 +93,7 @@ export class DatabaseError extends AppError {
 export const SAFE_ERROR_MESSAGES: Record<ErrorCode, string> = {
   VALIDATION_ERROR: 'Request validation failed',
   NOT_FOUND: 'Resource not found',
+  FORBIDDEN: 'Forbidden',
   CONFLICT: 'Request conflicts with current state',
   PAYLOAD_TOO_LARGE: 'Request body is too large',
   PROVIDER_ERROR: 'An upstream service failed',

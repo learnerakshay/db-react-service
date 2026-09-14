@@ -57,6 +57,42 @@ behavior without reshaping configuration.
     the CampaignLead transition map.
   - `imports/` — canonical ingestion service, CSV adapter, batch lifecycle.
 
+## Reply intelligence (Phase 2 / Prompt 2)
+
+```text
+inbound webhook → reply-process job (also reply-processing-tick safety net)
+  → modules/replies/processor.ts
+      claim (ReplyProcessing, UNIQUE per inbound message)
+      safety gate (exact STOP, stale, suppressed)        no AI
+      context.ts      bounded same-conversation history
+      classifier.ts   AiProvider → Zod-validated IntentAnalysis
+      router.ts       deterministic action
+      knowledge/retrieval.ts + grounding.ts   approved facts → validated answer
+      apply           suppression / transitions / PENDING reply (one transaction)
+  → modules/replies/reply-sender.ts → MessagingProvider (same guarantees as Step 1)
+
+providers/ai/index.ts (contract) → providers/ai/openai.ts (only OpenAI importer)
+POST/GET /api/v1/knowledge, POST /api/v1/knowledge/:id/deactivate
+```
+
+## Messaging (Phase 2 / Prompt 1)
+
+```text
+pg-boss outbound-dispatch-tick → outbound-step1-send (per QUEUED member)
+  → modules/messaging/outbound.ts   lock, final safety checks, claim, send, record
+  → providers/messaging/index.ts    MessagingProvider contract
+  → providers/messaging/twilio.ts   Twilio SDK (only importer)
+
+POST /api/v1/webhooks/messaging/:provider/inbound   (raw form body, signature first)
+  → modules/messaging/inbound.ts    idempotent insert, lead/campaign resolution, hard opt-out
+POST /api/v1/webhooks/messaging/:provider/status
+  → modules/messaging/delivery.ts   idempotent, forward-only Message status
+```
+
+Webhook routes exist only when `SMS_PROVIDER` is configured. Signatures are
+verified against `API_URL` + the request path, so `API_URL` must be the public
+URL the provider calls.
+
 ## Ingestion (Phase 1 / Prompt 1)
 
 ```text

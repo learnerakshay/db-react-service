@@ -16,7 +16,7 @@ export function connectTestDatabase(): Database {
 /** TRUNCATE does not fire the SuppressionEntry row trigger, so this is allowed. */
 export async function resetDatabase(db: Database): Promise<void> {
   await db.$executeRawUnsafe(
-    'TRUNCATE TABLE "ImportRowResult", "CampaignLead", "ImportBatch", "Campaign", "Lead", "SuppressionEntry" CASCADE',
+    'TRUNCATE TABLE "ImportRowResult", "CampaignLead", "ImportBatch", "Campaign", "Lead", "SuppressionEntry", "ProviderWebhookEvent", "Message", "ReplyProcessing", "KnowledgeItem" CASCADE',
   );
 }
 

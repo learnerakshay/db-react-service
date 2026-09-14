@@ -17,8 +17,9 @@ This file governs all Claude Code work in this repository. Read it before every 
 | --------------------------------------------------------------------- | ----------------------------------- |
 | PHASE 0 — Foundation                                                  | COMPLETE / VERIFIED / FROZEN        |
 | PHASE 1 / Prompt 1 — Data Foundation + Ingestion                      | COMPLETE / VERIFIED / FROZEN        |
-| PHASE 1 / Prompt 2 — Campaign Queue, Throttling, Dispatch Eligibility | COMPLETE — awaiting freeze sign-off |
-| PHASE 2 — Messaging + Reply Intelligence                              | NOT STARTED                         |
+| PHASE 1 / Prompt 2 — Campaign Queue, Throttling, Dispatch Eligibility | COMPLETE / VERIFIED / FROZEN        |
+| PHASE 2 / Prompt 1 — Messaging + Webhook Foundation                   | COMPLETE / VERIFIED / FROZEN        |
+| PHASE 2 / Prompt 2 — Intent Classification + Grounded Reply Engine    | COMPLETE — awaiting freeze sign-off |
 | PHASE 3 — Conversion / Booking + Operational Automation               | NOT STARTED                         |
 | PHASE 4 — Mission Control + Production Hardening                      | NOT STARTED                         |
 | ENVIRONMENT VERIFICATION                                              | NOT STARTED                         |
@@ -124,6 +125,24 @@ External Service
 - Adapters convert vendor failures to `ProviderError` and never leak vendor types.
 - Every side-effecting provider call carries an idempotency key.
 - Provider interfaces in Phase 0 are provisional; the owning phase finalizes them.
+- Messaging is final (Phase 2 / Prompt 1): `providers/messaging/index.ts` is the
+  contract, `twilio.ts` the only adapter (the only file importing `twilio`),
+  `registry.ts` builds it from config.
+
+## Messaging safety rules
+
+- Every provider send goes through `sendStep1Message` (or a later sibling built
+  the same way): lock the membership, re-check campaign ACTIVE, membership
+  status, send window and **global suppression immediately before the call**.
+- One logical send per membership and purpose: `Message.sendKey` is UNIQUE.
+  Never create a second outbound message to retry; reuse the same row.
+- `STEP_1_SENT` only after the provider accepted the message.
+- `UNCERTAIN` (timeout, 5xx, interrupted send) is never resent automatically.
+- Webhooks: verify the provider signature before parsing anything; idempotency
+  comes from `ProviderWebhookEvent (provider, eventKey)`; delivery events only
+  move `Message.status` forward and never change campaign membership state.
+- Hard opt-out handling is deliberately narrow (exact commands only). Anything
+  semantic belongs to intent classification, never to `opt-out.ts`.
 
 ## Async / jobs policy
 
@@ -137,6 +156,27 @@ External Service
   when duplicated, retried, or run concurrently in several processes.
 - Handlers must be idempotent; retries must be bounded; failures must be logged
   with `jobId` and surfaced, never swallowed.
+
+## Reply intelligence rules
+
+- AI is limited to classifying, extracting and drafting grounded answers
+  (`providers/ai/index.ts` contract, `openai.ts` the only adapter). Model output
+  is validated with Zod (`intentAnalysisSchema`, `groundedAnswerSchema`) before
+  use; anything invalid escalates.
+- `routeReply` (`modules/replies/router.ts`) is the only place a classification
+  maps to an action. Below `CLASSIFIER_CONFIDENCE_THRESHOLD` nothing semantic
+  happens. The model's confidence is a routing signal, not a calibrated probability.
+- One processing record per inbound message (`ReplyProcessing.inboundMessageId`
+  UNIQUE); one automated reply per inbound message (`Message.sendKey`). Replies
+  are persisted before sending and sent with `sendConversationalReply`, which
+  re-checks suppression immediately before the provider call.
+- Business answers come only from active `KnowledgeItem`s retrieved for the
+  campaign, and must pass `validateGroundedAnswer`. Never let the model answer
+  from general knowledge.
+- Replies use fixed operator texts (`config.messages.replies`) or validated
+  grounded answers. Never send free-form model text.
+- Do not transition members to `QUALIFIED` or `BOOKED` from reply processing;
+  Phase 3 owns conversion.
 
 ## Error & logging policy
 

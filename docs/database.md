@@ -48,6 +48,12 @@ migration** to make sure none of them are dropped:
 - `ImportRowResult_reason_check`
 - `DispatchAdmission_capacity_check`, `DispatchAdmission_window_check`
   (in `20260914103226_dispatch_admission/migration.sql`)
+- `Message_direction_check`, `Message_provider_id_check`, `Message_body_check`,
+  (in `20260914163731_messaging_foundation/migration.sql`)
+- partial unique index `Message_outbound_step1_membership_key` (replaces
+  `Message_outbound_membership_purpose_key`), `ReplyProcessing_outcome_check`,
+  `ReplyProcessing_confidence_check`, `ReplyProcessing_attempts_check`
+  (in `20260914172036_reply_intelligence/migration.sql`)
 
 ## Ingestion semantics
 
@@ -139,6 +145,98 @@ one clock. Counters are rows in PostgreSQL; restarts change nothing.
 Scheduler: pg-boss cron `campaign-scheduler-tick` every minute enqueues one
 `campaign-admission` job per ACTIVE campaign (key = campaign id, queue policy
 `stately`). Retries are bounded (3, exponential backoff).
+
+## Messaging (Phase 2 / Prompt 1)
+
+Models:
+
+- `Message` — one row per SMS, either direction. Outbound: `sendKey`
+  (`<campaignLeadId>:CAMPAIGN_STEP_1`, UNIQUE), `status`
+  `PENDING → SENDING → ACCEPTED → SENT → DELIVERED`, or `FAILED`, `UNCERTAIN`,
+  `CANCELLED`. Inbound: `RECEIVED` with `inboundResolution`
+  (`MATCHED | AMBIGUOUS_CAMPAIGN | NO_CAMPAIGN | UNKNOWN_SENDER`) and optional
+  `safetyAction = HARD_OPT_OUT`. UNIQUE (`provider`, `providerMessageId`).
+- `ProviderWebhookEvent` — UNIQUE (`provider`, `eventKey`); stores identifiers,
+  provider status, error code and outcome only (no raw payloads).
+- Index `CampaignLead(status, statusChangedAt)` for the dispatch scan.
+
+Outbound Step 1 (`modules/messaging/outbound.ts`):
+
+1. **Prepare** (transaction): `SELECT … FOR UPDATE OF CampaignLead FOR SHARE OF Campaign`.
+   Existing logical send that is not `PENDING` → report it, never send again
+   (a `SENDING` row older than 10 minutes becomes `UNCERTAIN`). Then require
+   membership `QUEUED`, campaign `ACTIVE`, a Step 1 template, and recipient
+   inside the send window. `LOCK TABLE "SuppressionEntry" IN SHARE MODE` and
+   check suppression by phone and email: suppressed → `CANCELLED` +
+   `QUEUED → OPTED_OUT`. Render the template, write the Message as `SENDING`.
+2. **Provider call** outside any transaction (15s timeout, no SDK auto-retry).
+3. **Record** (transaction): `ACCEPTED` → Message `ACCEPTED` + `QUEUED → STEP_1_SENT`;
+   definite rejection → `FAILED` (Twilio 21610 also adds global suppression and
+   opts the membership out); retryable rejection (429, request never sent) →
+   back to `PENDING`; anything else → `UNCERTAIN`, never resent.
+
+Dispatch: pg-boss cron `outbound-dispatch-tick` (every minute) marks stale
+`SENDING` rows `UNCERTAIN` and enqueues `outbound-step1-send` per candidate
+(QUEUED, ACTIVE campaign, template, in window, no non-`PENDING` send; key =
+membership id).
+
+Inbound (`modules/messaging/inbound.ts`), one transaction per webhook: insert
+event (duplicate → no-op), resolve lead by E.164 phone and campaign by outbound
+messages sent to that lead from the receiving number, insert Message, and for an
+exact hard opt-out command create suppression (unless one exists) and move
+every membership that can opt out to `OPTED_OUT`.
+
+Delivery (`modules/messaging/delivery.ts`): insert event keyed
+`status:<sid>:<providerStatus>` (duplicate → no-op); update the Message only
+forward (`ACCEPTED → SENT → DELIVERED | FAILED`; DELIVERED/FAILED final).
+
+## Reply intelligence (Phase 2 / Prompt 2)
+
+Models:
+
+- `ReplyProcessing` — one row per inbound message (UNIQUE `inboundMessageId`):
+  status (`PROCESSING | RETRY | COMPLETED | ESCALATED | SKIPPED`), claim
+  `attempts` + `claimedAt`, validated `classification`/`confidence`/extracted
+  details, routed `action`, `escalationReason`, cited `knowledgeItemIds`, AI
+  provider/model/request ids, `replyMessageId`. No model reasoning is stored.
+- `KnowledgeItem` — operator-approved facts (campaign-specific or business-wide),
+  category, optional question, content, keywords, `active`.
+- `MessagePurpose.CONVERSATIONAL_REPLY` — replies with sendKey
+  `<inboundMessageId>:CONVERSATIONAL_REPLY`.
+
+Processing (`modules/replies/processor.ts`):
+
+1. **Claim** (transaction): insert the processing row (ON CONFLICT DO NOTHING)
+   and lock it. Finished → no-op (an unsent reply is resumed); live claim → stop;
+   stale claim (5 min) or RETRY → re-claim with `attempts + 1`; after 3 attempts →
+   ESCALATED `AI_UNAVAILABLE`.
+2. **Decide** (no transaction): exact STOP already handled → SKIPPED (no AI);
+   inbound older than 24h → ESCALATED; suppressed lead → ESCALATED (no AI).
+   Otherwise classify with ≤10 prior messages of the same membership, validate,
+   route. Questions: retrieve facts; none → ESCALATED `MISSING_KNOWLEDGE`
+   (+ handoff text if configured); otherwise grounded answer, validated; failure
+   → ESCALATED `UNGROUNDED_ANSWER`.
+3. **Apply** (transaction, only for the latest claim attempt): suppression +
+   `OPTED_OUT` for opt-outs (and cancel PENDING outbound), `STEP_1_SENT → ENGAGED`,
+   `→ DORMANT_ARCHIVED` for declines, reply Message as PENDING, processing result.
+4. **Send** the reply via `sendConversationalReply` (lock, suppression re-check,
+   SENDING claim, provider, record; UNCERTAIN never resent).
+
+Routing (`modules/replies/router.ts`): below threshold → HUMAN_REVIEW; confident
+HARD_OPT_OUT → OPT_OUT (lead-level, even without campaign context); non-MATCHED
+association, closed conversation or pending human review → HUMAN_REVIEW;
+POSITIVE → ENGAGE + positive text; QUESTION → grounded answer; NOT_INTERESTED →
+close + decline text; AMBIGUOUS → clarify text once, then HUMAN_REVIEW. A missing
+reply text escalates instead of improvising.
+
+Jobs: `reply-process` is enqueued by the inbound webhook; `reply-processing-tick`
+(every minute) re-enqueues unprocessed/RETRY/stale inbound messages and PENDING
+replies (`reply-send`).
+
+Permanent Step 1 failures: a non-retryable provider rejection or an unrenderable
+template moves the membership `QUEUED → DORMANT_ARCHIVED`; the outbound dispatch
+tick archives any members still stuck that way. UNCERTAIN and retryable PENDING
+sends are never archived.
 
 ## Migration workflow
 

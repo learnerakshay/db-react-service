@@ -38,10 +38,17 @@ export const envSchema = z
 
     // Future provider credentials: accepted now, required by their owning phase.
     OPENAI_API_KEY: optionalString,
-    SMS_PROVIDER: optionalString,
+    OPENAI_MODEL: optionalString,
+    SMS_PROVIDER: field(z.enum(['twilio']).optional()),
     SMS_ACCOUNT_ID: optionalString,
     SMS_AUTH_TOKEN: optionalString,
-    SMS_FROM_NUMBER: optionalString,
+    SMS_FROM_NUMBER: field(
+      z
+        .string()
+        .trim()
+        .regex(/^\+[1-9]\d{6,14}$/, 'must be an E.164 number')
+        .optional(),
+    ),
     CALENDAR_PROVIDER: optionalString,
     CRM_PROVIDER: optionalString,
     OWNER_NOTIFICATION_PROVIDER: optionalString,
@@ -79,6 +86,41 @@ export const envSchema = z
         if (env[key] === undefined) {
           ctx.addIssue({ code: 'custom', path: [key], message: 'is required in production' });
         }
+      }
+    }
+    // No default model: the operator chooses it explicitly.
+    if (env.OPENAI_API_KEY !== undefined && env.OPENAI_MODEL === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['OPENAI_MODEL'],
+        message: 'is required when OPENAI_API_KEY is set',
+      });
+    }
+    if (env.SMS_PROVIDER !== undefined) {
+      for (const key of ['SMS_ACCOUNT_ID', 'SMS_AUTH_TOKEN', 'SMS_FROM_NUMBER'] as const) {
+        if (env[key] === undefined) {
+          ctx.addIssue({
+            code: 'custom',
+            path: [key],
+            message: 'is required when SMS_PROVIDER is set',
+          });
+        }
+      }
+      // The Twilio SDK throws on a malformed Account SID; fail at startup instead.
+      if (env.SMS_ACCOUNT_ID !== undefined && !/^AC[0-9a-fA-F]{32}$/.test(env.SMS_ACCOUNT_ID)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['SMS_ACCOUNT_ID'],
+          message: 'must be a Twilio Account SID (AC followed by 32 hex characters)',
+        });
+      }
+      // Webhook signatures are computed over the public URL built from API_URL.
+      if (env.NODE_ENV === 'production' && !env.API_URL.startsWith('https://')) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['API_URL'],
+          message: 'must be the public https URL when SMS_PROVIDER is set in production',
+        });
       }
     }
     // HH:MM strings compare correctly lexicographically.

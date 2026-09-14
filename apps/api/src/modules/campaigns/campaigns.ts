@@ -4,6 +4,8 @@ import { timeOfDay, timezone } from '../../config/env.js';
 import type { DbClient } from '../../db/client.js';
 import { CampaignStatus } from '../../generated/prisma/enums.js';
 import { ConflictError, NotFoundError, ValidationError } from '../../lib/errors.js';
+import { step1TemplateSchema } from '../messaging/template.js';
+import { replyTemplatesSchema } from '../replies/reply-templates.js';
 
 export const campaignConfigSchema = z
   .object({
@@ -16,6 +18,10 @@ export const campaignConfigSchema = z
     hourlyDispatchLimit: z.int().positive(),
     followUpDelayHours: z.number().positive(),
     archiveDelayDays: z.number().positive(),
+    /** Outbound copy. Step 1 is not sent for campaigns without it. */
+    messages: z
+      .object({ step1: step1TemplateSchema, replies: replyTemplatesSchema.optional() })
+      .optional(),
   })
   .refine((config) => config.sendWindow.start < config.sendWindow.end, {
     path: ['sendWindow', 'end'],
@@ -33,6 +39,8 @@ export const createCampaignSchema = z.object({
       hourlyDispatchLimit: z.number(),
       followUpDelayHours: z.number(),
       archiveDelayDays: z.number(),
+      // Validated by campaignConfigSchema after merging with defaults.
+      messages: z.unknown(),
     })
     .partial()
     .optional(),

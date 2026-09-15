@@ -4,9 +4,12 @@ import { Router } from 'express';
 export interface SystemRouteDeps {
   serviceName: string;
   checkDatabase: () => Promise<DependencyStatus>;
+  /** Job queue state; absent means this process runs no workers. */
+  checkJobs?: () => DependencyStatus;
 }
 
-export function systemRouter({ serviceName, checkDatabase }: SystemRouteDeps): Router {
+/** Probe routes: never authenticated, never expose configuration or credentials. */
+export function systemRouter({ serviceName, checkDatabase, checkJobs }: SystemRouteDeps): Router {
   const router = Router();
 
   // Liveness: the process is up. Must not depend on external systems.
@@ -20,13 +23,15 @@ export function systemRouter({ serviceName, checkDatabase }: SystemRouteDeps): R
     res.json(body);
   });
 
-  // Readiness: required infrastructure is reachable.
+  // Readiness: infrastructure this configuration requires is available.
+  // Optional, unconfigured parts (`not_configured` jobs) never fail readiness.
   router.get('/ready', async (_req, res) => {
     const database = await checkDatabase();
-    const ready = database === 'up';
+    const jobs = checkJobs?.() ?? 'not_configured';
+    const ready = database === 'up' && jobs !== 'down';
     const body: ReadinessResponse = {
       status: ready ? 'ready' : 'not_ready',
-      checks: { database },
+      checks: { database, jobs },
       timestamp: new Date().toISOString(),
     };
     res.status(ready ? 200 : 503).json(body);

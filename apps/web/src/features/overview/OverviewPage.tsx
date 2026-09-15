@@ -3,6 +3,7 @@ import { ResourceView, Kpi, RefreshControl } from '../../components/ui';
 import { useResource } from '../../hooks/useResource';
 import { apiGet } from '../../lib/api';
 import { formatCount, formatRate } from '../../lib/format';
+import { OperatorActivityPanel } from '../audit/OperatorActivityPanel';
 import { CampaignTable } from '../campaigns/CampaignTable';
 import { IntegrationHealthPanel } from '../integrations/IntegrationHealthPanel';
 
@@ -28,6 +29,7 @@ export function OverviewPage() {
       </section>
       <CampaignTable />
       <IntegrationHealthPanel />
+      <OperatorActivityPanel />
     </div>
   );
 }

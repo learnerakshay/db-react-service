@@ -43,11 +43,12 @@ afterEach(async () => {
   );
 });
 
-function buildApp(database: DependencyStatus = 'not_configured'): Express {
+function buildApp(database: DependencyStatus = 'not_configured', jobs?: DependencyStatus): Express {
   return createApp({
     config: loadConfig({ NODE_ENV: 'test', WEB_URL: 'http://localhost:5173' }),
     logger,
     checkDatabase: () => Promise.resolve(database),
+    ...(jobs === undefined ? {} : { checkJobs: () => jobs }),
   });
 }
 
@@ -96,6 +97,19 @@ describe('GET /ready', () => {
     expect(res.status).toBe(status);
     expect(body.status).toBe(readiness);
     expect(body.checks.database).toBe(database);
+  });
+
+  it.each([
+    [undefined, 200, 'not_configured'],
+    ['up', 200, 'up'],
+    ['down', 503, 'down'],
+  ] as const)('job queue %s -> %i', async (jobs, status, reported) => {
+    const url = await serve(buildApp('up', jobs));
+    const res = await fetch(`${url}/ready`);
+    const body = (await res.json()) as ReadinessResponse;
+    expect(res.status).toBe(status);
+    expect(body.checks.jobs).toBe(reported);
+    expect(JSON.stringify(body)).not.toMatch(/postgres|token|password/i);
   });
 });
 

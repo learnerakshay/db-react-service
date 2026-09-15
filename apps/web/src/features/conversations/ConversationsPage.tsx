@@ -1,4 +1,5 @@
 import {
+  type AutomationChangeResponse,
   type AutomationState,
   type ConversationDetail,
   type ConversationFilter,
@@ -266,7 +267,9 @@ export function AutomationControl({
     setBusy(true);
     setError(null);
     try {
-      await apiPost<AutomationState>(`/api/v1/leads/${encodeURIComponent(leadId)}/${path}`);
+      await apiPost<AutomationChangeResponse>(
+        `/api/v1/leads/${encodeURIComponent(leadId)}/${path}`,
+      );
       setConfirming(false);
       onChanged();
     } catch (err) {
@@ -283,7 +286,7 @@ export function AutomationControl({
       </span>
       {confirming ? (
         <ConfirmPrompt
-          message="Resume automated messages for this lead?"
+          message="Resume automated messages for this lead? Its open reviews are resolved; suppression and closed conversations still stop sends."
           confirmLabel="Resume automation"
           busy={busy}
           onConfirm={() => {

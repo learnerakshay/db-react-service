@@ -3,7 +3,7 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../../src/app.js';
-import { loadConfig } from '../../src/config/index.js';
+import { ADMIN_HEADERS, authConfig } from '../helpers/auth.js';
 import type { Database } from '../../src/db/client.js';
 import { KnowledgeCategory } from '../../src/generated/prisma/enums.js';
 import { createKnowledgeItem } from '../../src/modules/knowledge/knowledge.js';
@@ -18,7 +18,7 @@ let baseUrl: string;
 
 beforeAll(async () => {
   db = connectTestDatabase();
-  const config = loadConfig({ NODE_ENV: 'test' });
+  const config = authConfig();
   const app = createApp({
     config,
     logger: silentLogger,
@@ -121,7 +121,7 @@ describe('knowledge API', () => {
   const post = (path: string, body?: unknown) =>
     fetch(`${baseUrl}${path}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...ADMIN_HEADERS },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
 
@@ -144,13 +144,13 @@ describe('knowledge API', () => {
     });
 
     const list = (await (
-      await fetch(`${baseUrl}?campaignId=${campaign.id}`)
+      await fetch(`${baseUrl}?campaignId=${campaign.id}`, { headers: ADMIN_HEADERS })
     ).json()) as KnowledgeItemDto[];
     expect(list.map((i) => i.id)).toEqual([item.id]);
 
     const deactivated = await post(`/${item.id}/deactivate`);
     expect(((await deactivated.json()) as KnowledgeItemDto).active).toBe(false);
-    expect(await (await fetch(baseUrl)).json()).toEqual([]);
+    expect(await (await fetch(baseUrl, { headers: ADMIN_HEADERS })).json()).toEqual([]);
   });
 
   it('validates input and unknown references', async () => {
@@ -167,6 +167,8 @@ describe('knowledge API', () => {
       ).status,
     ).toBe(404);
     expect((await post('/not-a-uuid/deactivate')).status).toBe(404);
-    expect((await fetch(`${baseUrl}?campaignId=nope`)).status).toBe(400);
+    expect((await fetch(`${baseUrl}?campaignId=nope`, { headers: ADMIN_HEADERS })).status).toBe(
+      400,
+    );
   });
 });

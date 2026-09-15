@@ -2,6 +2,7 @@ import { CampaignDetail } from '../features/campaigns/CampaignDetail';
 import { ConversationsPage } from '../features/conversations/ConversationsPage';
 import { OverviewPage } from '../features/overview/OverviewPage';
 import { ReviewsPage } from '../features/reviews/ReviewsPage';
+import { useOperatorSession } from '../lib/operator';
 import { useHashRoute, type Route } from '../lib/route';
 
 const NAV: readonly { href: string; label: string; views: readonly Route['view'][] }[] = [
@@ -13,6 +14,7 @@ const NAV: readonly { href: string; label: string; views: readonly Route['view']
 /** Operator console: a window onto backend truth. All figures come from the API. */
 export function MissionControl() {
   const route = useHashRoute();
+  const { operator, signOut } = useOperatorSession();
 
   return (
     <div className="min-h-full">
@@ -37,6 +39,18 @@ export function MissionControl() {
               );
             })}
           </nav>
+          <div className="ml-auto flex items-center gap-3 text-xs text-zinc-400">
+            <span>
+              <span className="text-zinc-200">{operator.id}</span> · {operator.role}
+            </span>
+            <button
+              type="button"
+              onClick={signOut}
+              className="rounded border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800 focus-visible:outline-2 focus-visible:outline-amber-400"
+            >
+              Sign out
+            </button>
+          </div>
         </div>
       </header>
       <main className="mx-auto max-w-[1680px] px-6 py-5">

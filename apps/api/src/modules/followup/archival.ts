@@ -32,7 +32,8 @@ function archivableQuery(now: Date, filter: Prisma.Sql, suffix: Prisma.Sql): Pri
           AND i."createdAt" > COALESCE(s."sendingStartedAt", s."createdAt"))
       AND NOT EXISTS (
         SELECT 1 FROM "ReplyProcessing" r
-        WHERE r."leadId" = cl."leadId" AND r."status" = 'ESCALATED'::"ReplyProcessingStatus")
+        WHERE r."leadId" = cl."leadId" AND r."status" = 'ESCALATED'::"ReplyProcessingStatus"
+          AND r."reviewResolvedAt" IS NULL)
       AND NOT EXISTS (SELECT 1 FROM "BookingOpportunity" b WHERE b."campaignLeadId" = cl."id")
       AND NOT EXISTS (
         SELECT 1 FROM "Lead" p WHERE p."id" = cl."leadId" AND p."automationPausedAt" IS NOT NULL)

@@ -13,6 +13,8 @@ export interface ReadinessResponse {
   status: 'ready' | 'not_ready';
   checks: {
     database: DependencyStatus;
+    /** Background job queue; `not_configured` when this process runs no workers. */
+    jobs: DependencyStatus;
   };
   timestamp: string;
 }

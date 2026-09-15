@@ -46,6 +46,8 @@ describe('messaging configuration', () => {
       NODE_ENV: 'production',
       DATABASE_URL: 'postgresql://db/app',
       WEB_URL: 'https://app.example.com',
+      // Required in production since Phase 4 / Prompt 2.
+      OPERATOR_TOKENS: `admin:ADMIN:${'c'.repeat(64)}`,
     };
     expect(() => loadConfig({ ...production, API_URL: 'http://api.example.com' })).toThrow(
       /API_URL/,

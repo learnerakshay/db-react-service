@@ -1,8 +1,10 @@
 /** Stable machine-readable error codes returned by the API. */
 export const ERROR_CODES = [
   'VALIDATION_ERROR',
+  'UNAUTHORIZED',
   'NOT_FOUND',
   'FORBIDDEN',
+  'RATE_LIMITED',
   'CONFLICT',
   'PAYLOAD_TOO_LARGE',
   'PROVIDER_ERROR',

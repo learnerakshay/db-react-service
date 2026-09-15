@@ -47,7 +47,7 @@ export async function listConversations(
       ? Prisma.empty
       : Prisma.sql`AND ${Prisma.raw(alias)}."campaignId" = ${query.campaignId}::uuid`;
   const openReview = Prisma.sql`EXISTS (SELECT 1 FROM "ReplyProcessing" r
-    WHERE r."leadId" = latest."leadId" AND r."status" = 'ESCALATED')`;
+    WHERE r."leadId" = latest."leadId" AND r."status" = 'ESCALATED' AND r."reviewResolvedAt" IS NULL)`;
   const filter =
     query.filter === 'takeover'
       ? Prisma.sql`WHERE l."automationPausedAt" IS NOT NULL`
@@ -91,7 +91,7 @@ export async function listConversations(
              t."firstName", t."lastName", t."phone", t."automationPausedAt",
              cl."status" AS "membershipStatus", c."id" AS "campaignId", c."name" AS "campaignName",
              (SELECT COUNT(*) FROM "ReplyProcessing" r
-               WHERE r."leadId" = t."leadId" AND r."status" = 'ESCALATED') AS "openReviews"
+               WHERE r."leadId" = t."leadId" AND r."status" = 'ESCALATED' AND r."reviewResolvedAt" IS NULL) AS "openReviews"
       FROM (${base}) t
       LEFT JOIN LATERAL (
         SELECT cl."status", cl."campaignId" FROM "CampaignLead" cl
@@ -205,10 +205,15 @@ export async function getConversation(
  */
 export async function listReviews(
   db: DbClient,
-  query: PageQuery & { campaignId?: string | undefined; reason?: EscalationReason | undefined },
+  query: PageQuery & {
+    campaignId?: string | undefined;
+    reason?: EscalationReason | undefined;
+    state: 'OPEN' | 'RESOLVED';
+  },
 ): Promise<Page<ReviewItem>> {
   const where: Prisma.ReplyProcessingWhereInput = {
     status: ReplyProcessingStatus.ESCALATED,
+    reviewResolvedAt: query.state === 'OPEN' ? null : { not: null },
     ...(query.reason === undefined ? {} : { escalationReason: query.reason }),
     ...(query.campaignId === undefined
       ? {}
@@ -227,6 +232,10 @@ export async function listReviews(
         classification: true,
         confidence: true,
         createdAt: true,
+        reviewResolvedAt: true,
+        reviewResolution: true,
+        reviewResolvedBy: true,
+        reviewNote: true,
         inboundMessage: { select: { id: true, body: true, createdAt: true } },
         lead: {
           select: { id: true, firstName: true, lastName: true, automationPausedAt: true },
@@ -252,6 +261,18 @@ export async function listReviews(
         body: row.inboundMessage.body,
         at: row.inboundMessage.createdAt.toISOString(),
       },
+      state: row.reviewResolvedAt === null ? 'OPEN' : 'RESOLVED',
+      resolution:
+        row.reviewResolvedAt === null ||
+        row.reviewResolution === null ||
+        row.reviewResolvedBy === null
+          ? null
+          : {
+              type: row.reviewResolution,
+              resolvedAt: row.reviewResolvedAt.toISOString(),
+              resolvedBy: row.reviewResolvedBy,
+              note: row.reviewNote,
+            },
       escalationReason: row.escalationReason,
       classification: row.classification,
       confidence: row.confidence,

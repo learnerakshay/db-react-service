@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ConfigurationError } from '../lib/errors.js';
+import { parseOperatorTokens } from './operators.js';
 
 /** `.env` files produce `KEY=` for unset values; treat blanks as absent. */
 const blankToUndefined = (value: unknown): unknown =>
@@ -35,6 +36,11 @@ export const envSchema = z
     API_PORT: field(z.coerce.number().int().min(1).max(65_535).default(4000)),
     WEB_URL: field(z.url().optional()),
     API_URL: field(z.url().default('http://localhost:4000')),
+    /** Reverse-proxy hops in front of the API (for client IPs in rate limiting). */
+    TRUST_PROXY: field(z.coerce.number().int().min(0).max(10).default(0)),
+
+    // Operator access (Phase 4 / Prompt 2): "<id>:<OPERATOR|ADMIN>:<sha256 hex>", comma-separated.
+    OPERATOR_TOKENS: optionalString,
 
     // Future provider credentials: accepted now, required by their owning phase.
     OPENAI_API_KEY: optionalString,
@@ -81,13 +87,30 @@ export const envSchema = z
     ),
   })
   .superRefine((env, ctx) => {
+    const issue = (path: string, message: string) => {
+      ctx.addIssue({ code: 'custom', path: [path], message });
+    };
     if (env.NODE_ENV === 'production') {
-      for (const key of ['DATABASE_URL', 'WEB_URL'] as const) {
-        if (env[key] === undefined) {
-          ctx.addIssue({ code: 'custom', path: [key], message: 'is required in production' });
+      for (const key of ['DATABASE_URL', 'WEB_URL', 'OPERATOR_TOKENS'] as const) {
+        if (env[key] === undefined) issue(key, 'is required in production');
+      }
+      // Operator tokens travel in headers: never over plain HTTP in production.
+      for (const key of ['API_URL', 'WEB_URL'] as const) {
+        const value = env[key];
+        if (value !== undefined && !value.startsWith('https://')) {
+          issue(key, 'must be an https URL in production');
         }
       }
     }
+    // CORS allows exactly this origin: no wildcard, path or query.
+    if (
+      env.WEB_URL !== undefined &&
+      new URL(env.WEB_URL).origin !== env.WEB_URL.replace(/\/$/, '')
+    ) {
+      issue('WEB_URL', 'must be a bare origin such as https://ops.example.com');
+    }
+    const operators = parseOperatorTokens(env.OPERATOR_TOKENS);
+    if (!operators.ok) issue('OPERATOR_TOKENS', operators.message);
     // No default model: the operator chooses it explicitly.
     if (env.OPENAI_API_KEY !== undefined && env.OPENAI_MODEL === undefined) {
       ctx.addIssue({

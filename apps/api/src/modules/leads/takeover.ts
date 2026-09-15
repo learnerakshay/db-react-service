@@ -18,16 +18,17 @@ export function automationState(pausedAt: Date | null): AutomationState {
  *
  * Takeover never changes suppression, membership, booking or review state:
  * opt-outs still apply while paused, and resuming never makes a suppressed
- * lead sendable. Repeating the current mode is a no-op (the original
- * takeover time is kept).
+ * lead sendable. Repeating the current mode is a no-op (`changed: false`, the
+ * original takeover time is kept). Operator-facing callers go through
+ * modules/reviews/resolution.ts, which adds review resolution and audit.
  */
 export async function setHumanTakeover(
   db: DbClient,
   leadId: string,
   takeover: boolean,
   now: Date,
-): Promise<AutomationState> {
-  await db.lead.updateMany({
+): Promise<{ automation: AutomationState; changed: boolean }> {
+  const { count } = await db.lead.updateMany({
     where: { id: leadId, automationPausedAt: takeover ? null : { not: null } },
     data: { automationPausedAt: takeover ? now : null },
   });
@@ -36,5 +37,5 @@ export async function setHumanTakeover(
     select: { automationPausedAt: true },
   });
   if (lead === null) throw new NotFoundError('Lead not found');
-  return automationState(lead.automationPausedAt);
+  return { automation: automationState(lead.automationPausedAt), changed: count === 1 };
 }

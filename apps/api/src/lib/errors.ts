@@ -42,6 +42,19 @@ export class ValidationError extends AppError {
   }
 }
 
+/** No valid operator credential was presented. */
+export class UnauthorizedError extends AppError {
+  constructor(message = 'Authentication required') {
+    super('UNAUTHORIZED', 401, message, { expose: true });
+  }
+}
+
+export class RateLimitedError extends AppError {
+  constructor(message = 'Too many requests; try again later') {
+    super('RATE_LIMITED', 429, message, { expose: true });
+  }
+}
+
 export class NotFoundError extends AppError {
   constructor(message = 'Resource not found') {
     super('NOT_FOUND', 404, message, { expose: true });
@@ -92,8 +105,10 @@ export class DatabaseError extends AppError {
 /** Client-facing messages for errors whose own message is not exposed. */
 export const SAFE_ERROR_MESSAGES: Record<ErrorCode, string> = {
   VALIDATION_ERROR: 'Request validation failed',
+  UNAUTHORIZED: 'Authentication required',
   NOT_FOUND: 'Resource not found',
   FORBIDDEN: 'Forbidden',
+  RATE_LIMITED: 'Too many requests; try again later',
   CONFLICT: 'Request conflicts with current state',
   PAYLOAD_TOO_LARGE: 'Request body is too large',
   PROVIDER_ERROR: 'An upstream service failed',

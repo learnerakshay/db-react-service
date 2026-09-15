@@ -13,6 +13,23 @@ export function bookingLinkSendKey(opportunityId: string): string {
   return `${opportunityId}:${MessagePurpose.BOOKING_LINK}`;
 }
 
+/**
+ * Withdraw a membership's open (OFFERED) booking offer when its business flow
+ * closes: decline, opt-out or operator archive. The row is kept as CANCELLED;
+ * CONFIRMED bookings are never touched (only a verified provider event changes them).
+ */
+export async function cancelOpenBookingOffers(
+  tx: DbClient,
+  campaignLeadId: string,
+  now: Date,
+): Promise<number> {
+  const { count } = await tx.bookingOpportunity.updateMany({
+    where: { campaignLeadId, status: BookingStatus.OFFERED },
+    data: { status: BookingStatus.CANCELLED, cancelledAt: now },
+  });
+  return count;
+}
+
 /** Operator URL plus the opportunity's reference, so the provider can echo it back. */
 export function buildBookingUrl(config: BookingConfig, bookingReference: string): string {
   const url = new URL(config.url);

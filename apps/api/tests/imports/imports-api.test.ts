@@ -3,7 +3,7 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../../src/app.js';
-import { loadConfig } from '../../src/config/index.js';
+import { ADMIN_HEADERS, authConfig } from '../helpers/auth.js';
 import type { Database } from '../../src/db/client.js';
 import { addSuppression } from '../../src/modules/suppression/suppression.js';
 import { apiRouter } from '../../src/routes/api.js';
@@ -15,7 +15,7 @@ let baseUrl: string;
 
 beforeAll(async () => {
   db = connectTestDatabase();
-  const config = loadConfig({ NODE_ENV: 'test', IMPORT_MAX_FILE_BYTES: '4096' });
+  const config = authConfig({ IMPORT_MAX_FILE_BYTES: '4096' });
   const app = createApp({
     config,
     logger: silentLogger,
@@ -47,7 +47,11 @@ function uploadCsv(csv: string, fields: Record<string, string> = {}) {
   const form = new FormData();
   for (const [name, value] of Object.entries(fields)) form.append(name, value);
   form.append('file', new Blob([csv], { type: 'text/csv' }), 'leads.csv');
-  return fetch(`${baseUrl}/api/v1/imports/csv`, { method: 'POST', body: form });
+  return fetch(`${baseUrl}/api/v1/imports/csv`, {
+    method: 'POST',
+    body: form,
+    headers: ADMIN_HEADERS,
+  });
 }
 
 const CSV = [
@@ -93,7 +97,7 @@ describe('POST /api/v1/imports/csv', () => {
       ['+447911123456', null, 'legacy-crm'],
     ]);
 
-    const fetched = await fetch(`${baseUrl}/api/v1/imports/${body.id}`);
+    const fetched = await fetch(`${baseUrl}/api/v1/imports/${body.id}`, { headers: ADMIN_HEADERS });
     expect(fetched.status).toBe(200);
     expect(await fetched.json()).toEqual(body);
   });
@@ -101,7 +105,7 @@ describe('POST /api/v1/imports/csv', () => {
   it('stages accepted leads into a campaign created through the API', async () => {
     const created = await fetch(`${baseUrl}/api/v1/campaigns`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...ADMIN_HEADERS },
       body: JSON.stringify({ name: 'Spring reactivation', config: { hourlyDispatchLimit: 30 } }),
     });
     expect(created.status).toBe(201);
@@ -160,12 +164,18 @@ describe('POST /api/v1/imports/csv', () => {
     const noFile = new FormData();
     noFile.append('source', 'x');
     expect(
-      (await fetch(`${baseUrl}/api/v1/imports/csv`, { method: 'POST', body: noFile })).status,
+      (
+        await fetch(`${baseUrl}/api/v1/imports/csv`, {
+          method: 'POST',
+          body: noFile,
+          headers: ADMIN_HEADERS,
+        })
+      ).status,
     ).toBe(400);
 
     const json = await fetch(`${baseUrl}/api/v1/imports/csv`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...ADMIN_HEADERS },
       body: '{}',
     });
     expect(json.status).toBe(400);
@@ -191,8 +201,14 @@ describe('POST /api/v1/imports/csv', () => {
 describe('GET /api/v1/imports/:id', () => {
   it('returns 404 for unknown or malformed ids', async () => {
     expect(
-      (await fetch(`${baseUrl}/api/v1/imports/0190d9b0-0000-7000-8000-000000000000`)).status,
+      (
+        await fetch(`${baseUrl}/api/v1/imports/0190d9b0-0000-7000-8000-000000000000`, {
+          headers: ADMIN_HEADERS,
+        })
+      ).status,
     ).toBe(404);
-    expect((await fetch(`${baseUrl}/api/v1/imports/not-a-uuid`)).status).toBe(404);
+    expect(
+      (await fetch(`${baseUrl}/api/v1/imports/not-a-uuid`, { headers: ADMIN_HEADERS })).status,
+    ).toBe(404);
   });
 });

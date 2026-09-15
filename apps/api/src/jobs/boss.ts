@@ -51,6 +51,12 @@ export function createPgBossQueue(options: PgBossQueueOptions, logger: Logger): 
       );
     },
 
+    // ponytail: reflects start/stop only; a pg-boss that lost its database after
+    // start stays "up" here while the database check reports down.
+    isRunning() {
+      return started;
+    },
+
     async stop() {
       if (!started) return;
       started = false;

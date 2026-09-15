@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import type { Resource } from '../hooks/useResource';
+import { describeError } from '../lib/api';
 import { formatTime, humanize, TEXT_TONE, toneOf, type Tone } from '../lib/format';
 import { ErrorNotice, LoadingIndicator } from './Feedback';
 
@@ -109,7 +110,11 @@ export function ResourceView<T>({
   if (data === undefined) {
     return (
       <div className="px-4 py-4">
-        {error === undefined ? <LoadingIndicator /> : <ErrorNotice message={error.message} />}
+        {error === undefined ? (
+          <LoadingIndicator />
+        ) : (
+          <ErrorNotice message={describeError(error)} />
+        )}
       </div>
     );
   }
@@ -117,7 +122,9 @@ export function ResourceView<T>({
     <>
       {error !== undefined && (
         <div className="border-b border-zinc-800 px-4 py-2">
-          <ErrorNotice message={`Refresh failed, showing last loaded data: ${error.message}`} />
+          <ErrorNotice
+            message={`Refresh failed, showing last loaded data. ${describeError(error)}`}
+          />
         </div>
       )}
       {isEmpty?.(data) === true ? <EmptyState>{empty}</EmptyState> : children(data)}

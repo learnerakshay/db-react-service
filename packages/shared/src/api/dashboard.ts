@@ -238,6 +238,14 @@ export interface ReviewItem {
   confidence: number | null;
   createdAt: string;
   automation: AutomationState | null;
+  /** OPEN until an operator resolves it (Phase 4 / Prompt 2). */
+  state: 'OPEN' | 'RESOLVED';
+  resolution: {
+    type: 'RESUME_AUTOMATION' | 'KEEP_HUMAN_TAKEOVER' | 'ARCHIVE' | 'MARK_HANDLED';
+    resolvedAt: string;
+    resolvedBy: string;
+    note: string | null;
+  } | null;
 }
 
 // --- Lead detail ----------------------------------------------------------------

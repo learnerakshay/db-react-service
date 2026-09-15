@@ -1,7 +1,9 @@
+import type { OperatorIdentity } from '@cadentor/shared';
 import { Router } from 'express';
 import type { AppConfig } from '../config/index.js';
 import type { Database } from '../db/client.js';
 import type { Logger } from '../lib/logger.js';
+import { authenticateOperators, operatorOf, requireRole } from '../middleware/auth.js';
 import type { CalendarProvider } from '../providers/calendar/index.js';
 import type { IntegrationProviders } from '../providers/integrations.js';
 import type { MessagingProvider } from '../providers/messaging/index.js';
@@ -26,13 +28,18 @@ export interface ApiRouterDependencies {
   integrationProviders?: IntegrationProviders;
 }
 
-/** Feature routes, mounted at /api/v1. */
+/**
+ * Feature routes, mounted at /api/v1.
+ *
+ * 1. Webhooks: provider signature verification, never operator auth.
+ * 2. Everything else: operator bearer authentication (401), then roles (403):
+ *    reads, campaign lifecycle, takeover and review resolution need OPERATOR;
+ *    imports, knowledge writes, campaign creation and delivery recovery need ADMIN.
+ */
 export function apiRouter(deps: ApiRouterDependencies): Router {
   const router = Router();
-  router.use('/imports', importsRouter(deps));
-  router.use('/campaigns', campaignsRouter(deps));
-  router.use('/knowledge', knowledgeRouter(deps));
-  router.use(missionControlRouter(deps));
+  const { logger } = deps;
+
   if (deps.messagingProviders !== undefined && deps.messagingProviders.size > 0) {
     router.use(
       '/webhooks/messaging',
@@ -45,5 +52,15 @@ export function apiRouter(deps: ApiRouterDependencies): Router {
       calendarWebhooksRouter({ ...deps, providers: deps.calendarProviders }),
     );
   }
+
+  router.use(authenticateOperators(deps.config, logger));
+  router.get('/auth/me', (req, res) => {
+    const body: OperatorIdentity = operatorOf(req);
+    res.json(body);
+  });
+  router.use('/imports', requireRole('ADMIN', logger), importsRouter(deps));
+  router.use('/knowledge', requireRole('ADMIN', logger, true), knowledgeRouter(deps));
+  router.use('/campaigns', campaignsRouter(deps));
+  router.use(missionControlRouter(deps));
   return router;
 }

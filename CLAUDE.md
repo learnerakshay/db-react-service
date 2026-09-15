@@ -13,19 +13,20 @@ This file governs all Claude Code work in this repository. Read it before every 
 
 ## Phase registry
 
-| Phase                                                                 | Status                              |
-| --------------------------------------------------------------------- | ----------------------------------- |
-| PHASE 0 — Foundation                                                  | COMPLETE / VERIFIED / FROZEN        |
-| PHASE 1 / Prompt 1 — Data Foundation + Ingestion                      | COMPLETE / VERIFIED / FROZEN        |
-| PHASE 1 / Prompt 2 — Campaign Queue, Throttling, Dispatch Eligibility | COMPLETE / VERIFIED / FROZEN        |
-| PHASE 2 / Prompt 1 — Messaging + Webhook Foundation                   | COMPLETE / VERIFIED / FROZEN        |
-| PHASE 2 / Prompt 2 — Intent Classification + Grounded Reply Engine    | COMPLETE / VERIFIED / FROZEN        |
-| PHASE 3 / Prompt 1 — Qualification + Booking Conversion Engine        | COMPLETE / VERIFIED / FROZEN        |
-| PHASE 3 / Prompt 2 — CRM Sync + Owner Notifications + Follow-up       | COMPLETE — awaiting freeze sign-off |
-| PHASE 4 — Mission Control + Production Hardening                      | NOT STARTED                         |
-| ENVIRONMENT VERIFICATION                                              | NOT STARTED                         |
-| DEMO / PROOF                                                          | NOT STARTED                         |
-| CLIENT DEPLOYMENT                                                     | NOT STARTED                         |
+| Phase                                                                 | Status                       |
+| --------------------------------------------------------------------- | ---------------------------- |
+| PHASE 0 — Foundation                                                  | COMPLETE / VERIFIED / FROZEN |
+| PHASE 1 / Prompt 1 — Data Foundation + Ingestion                      | COMPLETE / VERIFIED / FROZEN |
+| PHASE 1 / Prompt 2 — Campaign Queue, Throttling, Dispatch Eligibility | COMPLETE / VERIFIED / FROZEN |
+| PHASE 2 / Prompt 1 — Messaging + Webhook Foundation                   | COMPLETE / VERIFIED / FROZEN |
+| PHASE 2 / Prompt 2 — Intent Classification + Grounded Reply Engine    | COMPLETE / VERIFIED / FROZEN |
+| PHASE 3 / Prompt 1 — Qualification + Booking Conversion Engine        | COMPLETE / VERIFIED / FROZEN |
+| PHASE 3 / Prompt 2 — CRM Sync + Owner Notifications + Follow-up       | COMPLETE / VERIFIED / FROZEN |
+| PHASE 4 / Prompt 1 — Mission Control Dashboard                        | COMPLETE / VERIFIED / FROZEN |
+| PHASE 4 / Prompt 2 — Final Hardening + Review Resolution + Release    | COMPLETE / VERIFIED / FROZEN |
+| ENVIRONMENT VERIFICATION                                              | NOT STARTED                  |
+| DEMO / PROOF                                                          | NOT STARTED                  |
+| CLIENT DEPLOYMENT                                                     | NOT STARTED                  |
 
 Only the phase explicitly authorized by the user is active. Update this table
 only when the user confirms a status change.
@@ -229,6 +230,31 @@ External Service
 - List endpoints are paginated (`MAX_PAGE_SIZE` in `@cadentor/shared`) with a
   stable id tiebreak.
 
+## Operator access, review and audit rules
+
+- Every `/api/v1` route except webhooks sits behind `authenticateOperators`
+  (`middleware/auth.ts`): bearer tokens checked against SHA-256 hashes in
+  `OPERATOR_TOKENS`. `/health` and `/ready` are never authenticated; webhooks
+  keep provider signature verification and are mounted before operator auth.
+- Roles: OPERATOR for reads, campaign lifecycle, takeover and review
+  resolution; ADMIN (`requireRole`) for campaign creation, imports, knowledge
+  writes and delivery recovery. 401 unauthenticated, 403 wrong role.
+- An open review is `OPEN_REVIEW` (`modules/reviews/resolution.ts`: ESCALATED
+  and `reviewResolvedAt` null). Every gate that waits for a human uses it.
+  Resolution goes only through `resolveReview` / `resumeLeadAutomation`, never
+  deletes or rewrites `ReplyProcessing`, and never bypasses suppression,
+  terminal states or booking truth.
+- Manual operator actions write one `OperatorAuditEvent` via
+  `recordOperatorAction` inside the action's transaction, only when state
+  changed. The table is append-only (trigger); never store credentials,
+  contact data or note text in audit metadata.
+- Blocked deliveries return to PENDING only through `requeueBlockedDeliveries`
+  (ADMIN, `BLOCKED` + `NOT_CONFIGURED`, configured destinations only).
+- Database unavailability maps to 503 `DATABASE_ERROR` only via
+  `isDatabaseUnavailableError` (`db/errors.ts`); other errors stay 500.
+- The app-level JSON parser skips `/api/v1/webhooks/`; webhook routers read
+  raw bodies for signature verification.
+
 ## Error & logging policy
 
 - Throw `AppError` subclasses from `apps/api/src/lib/errors.ts`. The error
@@ -292,6 +318,7 @@ npm run test
 npm run lint
 npm run typecheck
 npm run check:secrets
+npm run operator:token -- <id> <OPERATOR|ADMIN>   # new operator token + OPERATOR_TOKENS entry
 npm run db:local     # local PostgreSQL on :54329 without Docker (dev only)
 npm run db:migrate   # prisma migrate dev (requires DATABASE_URL)
 ```

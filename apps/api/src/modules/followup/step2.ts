@@ -184,7 +184,11 @@ async function prepareStep2(
       });
       if (replies > 0) return done('SKIPPED_REPLIED', existingId);
       const escalations = await tx.replyProcessing.count({
-        where: { leadId: member.leadId, status: ReplyProcessingStatus.ESCALATED },
+        where: {
+          leadId: member.leadId,
+          status: ReplyProcessingStatus.ESCALATED,
+          reviewResolvedAt: null,
+        },
       });
       if (escalations > 0) return done('SKIPPED_HUMAN_REVIEW', existingId);
 
@@ -396,7 +400,8 @@ export async function findStep2Candidates(
           AND i."createdAt" > cl."statusChangedAt")
       AND NOT EXISTS (
         SELECT 1 FROM "ReplyProcessing" r
-        WHERE r."leadId" = cl."leadId" AND r."status" = 'ESCALATED'::"ReplyProcessingStatus")
+        WHERE r."leadId" = cl."leadId" AND r."status" = 'ESCALATED'::"ReplyProcessingStatus"
+          AND r."reviewResolvedAt" IS NULL)
     ORDER BY cl."statusChangedAt", cl."id"
     LIMIT ${limit}`;
 

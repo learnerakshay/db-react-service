@@ -70,7 +70,8 @@ export async function getOverviewMetrics(
       (SELECT COUNT(*) FROM "BookingOpportunity" b
         WHERE b."status" = 'CONFIRMED' AND b."confirmedAt" IS NOT NULL) AS "booked",
       (SELECT COUNT(*) FROM "Campaign" WHERE "status" = 'ACTIVE') AS "activeCampaigns",
-      (SELECT COUNT(*) FROM "ReplyProcessing" WHERE "status" = 'ESCALATED') AS "openReviews",
+      (SELECT COUNT(*) FROM "ReplyProcessing"
+        WHERE "status" = 'ESCALATED' AND "reviewResolvedAt" IS NULL) AS "openReviews",
       (SELECT COUNT(*) FROM first_contact fc WHERE EXISTS (
         SELECT 1 FROM "CampaignLead" cl WHERE cl."leadId" = fc."leadId" AND cl."status" = 'OPTED_OUT'
       )) AS "optedOutLeads"`;

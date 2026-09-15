@@ -59,6 +59,9 @@ migration** to make sure none of them are dropped:
   `QualificationFact_value_check`, `QualificationFact_source_message_check`
   (in `20260915052514_qualification_booking/migration.sql`)
 - `IntegrationDelivery_state_check` (in `*_operational_automation/migration.sql`)
+- `ReplyProcessing_review_resolution_check`, partial index
+  `ReplyProcessing_open_review_lead_idx`, trigger `OperatorAuditEvent_append_only`
+  (blocks UPDATE and DELETE; TRUNCATE is not blocked) (in `*_release_hardening/migration.sql`)
 
 ## Ingestion semantics
 
@@ -349,6 +352,22 @@ Migration `*_mission_control` (no hand-written invariants added):
   the conversation.
 - Index `ReplyProcessing (status, createdAt)`: review queue, newest first.
 - Index `Message (campaignId, createdAt)`: campaign activity and last-activity lookups.
+
+## Release hardening (Phase 4 / Prompt 2)
+
+Migration `*_release_hardening`:
+
+- `ReplyProcessing.reviewResolvedAt`, `reviewResolution` (`ReviewResolution`),
+  `reviewResolvedBy`, `reviewNote`: human review resolution. Open review =
+  `status = ESCALATED AND reviewResolvedAt IS NULL`. Written only by
+  `modules/reviews/resolution.ts`.
+- `OperatorAuditEvent`: append-only operator audit (`OperatorAction`,
+  `AuditTargetType`), indexes on `createdAt` and `(targetType, targetId, createdAt)`.
+- Hand-written: `ReplyProcessing_review_resolution_check` (resolution only on
+  escalated rows, recorded completely or not at all), partial index
+  `ReplyProcessing_open_review_lead_idx`, trigger `OperatorAuditEvent_append_only`.
+- `CampaignLead` transition map: `ENGAGED → BOOKED` removed; `QUALIFIED → BOOKED`
+  is the only booking conversion (application map, no schema change).
 
 ## Migration workflow
 

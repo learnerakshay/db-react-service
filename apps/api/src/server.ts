@@ -182,10 +182,18 @@ if (db !== undefined && config.database.url !== undefined && config.jobs.workers
   logger.warn('JOB_WORKERS_ENABLED=false; scheduler and workers are not running in this process');
 }
 
+if (config.auth.operators.length === 0) {
+  logger.warn('OPERATOR_TOKENS is not set; no operator can sign in to Mission Control');
+}
+
+const jobQueue = queue;
 const app = createApp({
   config,
   logger,
   checkDatabase: databaseHealthCheck(db, logger),
+  ...(jobQueue === undefined
+    ? {}
+    : { checkJobs: () => (jobQueue.isRunning() ? ('up' as const) : ('down' as const)) }),
   api:
     db === undefined
       ? undefined

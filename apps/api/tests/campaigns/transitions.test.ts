@@ -21,7 +21,15 @@ describe('campaign lead transitions', () => {
     expect(canTransitionCampaignLead('STAGED', 'QUEUED')).toBe(true);
     expect(canTransitionCampaignLead('QUEUED', 'STEP_1_SENT')).toBe(true);
     expect(canTransitionCampaignLead('STEP_1_SENT', 'ENGAGED')).toBe(true);
-    expect(canTransitionCampaignLead('ENGAGED', 'BOOKED')).toBe(true);
+    expect(canTransitionCampaignLead('ENGAGED', 'QUALIFIED')).toBe(true);
+    expect(canTransitionCampaignLead('QUALIFIED', 'BOOKED')).toBe(true);
+  });
+
+  it('allows booking conversion only from QUALIFIED', () => {
+    const intoBooked = Object.values(CampaignLeadStatus).filter((from) =>
+      canTransitionCampaignLead(from, 'BOOKED'),
+    );
+    expect(intoBooked).toEqual(['QUALIFIED']);
   });
 
   it('rejects skipping steps, going backwards, and leaving terminal states', () => {

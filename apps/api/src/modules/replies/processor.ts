@@ -14,6 +14,7 @@ import {
 import type { Logger } from '../../lib/logger.js';
 import { AiProviderError, type AiProvider } from '../../providers/ai/index.js';
 import { campaignConfigSchema } from '../campaigns/campaigns.js';
+import { cancelOpenBookingOffers } from '../conversion/booking.js';
 import { hasOutstandingQualificationQuestion } from '../conversion/outstanding.js';
 import { canTransitionCampaignLead, transitionCampaignLead } from '../campaigns/membership.js';
 import { retrieveRelevantKnowledge } from '../knowledge/retrieval.js';
@@ -369,6 +370,8 @@ async function decide(
       where: {
         leadId: inbound.leadId,
         status: ReplyProcessingStatus.ESCALATED,
+        // Phase 4 / Prompt 2: a resolved review no longer waits for a human.
+        reviewResolvedAt: null,
         id: { not: claim.processingId },
         inboundMessage: { createdAt: { lt: inbound.createdAt } },
       },
@@ -596,6 +599,8 @@ async function applyDecision(
           },
           now,
         );
+        // A declined QUALIFIED lead must not keep a live booking link (Phase 4 / Prompt 2).
+        await cancelOpenBookingOffers(tx, inbound.campaignLeadId, now);
         membershipStatus = CampaignLeadStatus.DORMANT_ARCHIVED;
       }
 

@@ -1,4 +1,5 @@
 import { isApiErrorBody, type ErrorCode } from '@cadentor/shared';
+import { clearToken, getToken, UNAUTHORIZED_EVENT } from './auth';
 import { config } from './config';
 
 export type ApiClientErrorCode = ErrorCode | 'NETWORK_ERROR' | 'INVALID_RESPONSE';
@@ -27,33 +28,46 @@ interface RequestOptions {
  * Response bodies are typed by the shared contracts in @cadentor/shared.
  */
 export function apiGet<T>(path: string, { signal }: RequestOptions = {}): Promise<T> {
-  return request<T>(path, { headers: { Accept: 'application/json' }, signal });
+  return request<T>(path, 'GET', undefined, signal);
 }
 
 /** Operator controls. The server validates every state change; the UI never assumes one. */
 export function apiPost<T>(path: string, body?: unknown): Promise<T> {
-  return request<T>(path, {
-    method: 'POST',
-    headers:
-      body === undefined
-        ? { Accept: 'application/json' }
-        : { Accept: 'application/json', 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  return request<T>(path, 'POST', body, undefined);
 }
 
-async function request<T>(path: string, init: RequestInit): Promise<T> {
+async function request<T>(
+  path: string,
+  method: 'GET' | 'POST',
+  body: unknown,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  const headers: Record<string, string> = { Accept: 'application/json' };
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  const token = getToken();
+  if (token !== null) headers.Authorization = `Bearer ${token}`;
+
   let response: Response;
   try {
-    response = await fetch(`${config.apiUrl}${path}`, init);
+    response = await fetch(`${config.apiUrl}${path}`, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal,
+    });
   } catch (err) {
-    if (init.signal?.aborted) throw err;
+    if (signal?.aborted) throw err;
     throw new ApiClientError(0, 'NETWORK_ERROR', 'Unable to reach the API');
   }
 
-  let body: unknown;
+  if (response.status === 401) {
+    clearToken();
+    window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+  }
+
+  let parsed: unknown;
   try {
-    body = await response.json();
+    parsed = await response.json();
   } catch {
     throw new ApiClientError(
       response.status,
@@ -63,12 +77,12 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
-    if (isApiErrorBody(body)) {
+    if (isApiErrorBody(parsed)) {
       throw new ApiClientError(
         response.status,
-        body.error.code,
-        body.error.message,
-        body.error.requestId,
+        parsed.error.code,
+        parsed.error.message,
+        parsed.error.requestId,
       );
     }
     throw new ApiClientError(
@@ -78,5 +92,16 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
     );
   }
 
-  return body as T;
+  return parsed as T;
+}
+
+/** Operator-facing wording for failures; keeps the server's safe message otherwise. */
+export function describeError(error: Error): string {
+  if (!(error instanceof ApiClientError)) return error.message;
+  if (error.status === 503) {
+    return 'Service unavailable: the database cannot be reached. Retrying automatically.';
+  }
+  if (error.code === 'NETWORK_ERROR') return 'Cannot reach the API. Check the connection.';
+  if (error.status === 403) return `Not permitted: ${error.message}`;
+  return error.message;
 }

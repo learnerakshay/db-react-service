@@ -13,10 +13,10 @@ export function connectTestDatabase(): Database {
   return createDatabase(inject('databaseUrl'));
 }
 
-/** TRUNCATE does not fire the SuppressionEntry row trigger, so this is allowed. */
+/** TRUNCATE does not fire the append-only row triggers, so this is allowed in tests. */
 export async function resetDatabase(db: Database): Promise<void> {
   await db.$executeRawUnsafe(
-    'TRUNCATE TABLE "ImportRowResult", "CampaignLead", "ImportBatch", "Campaign", "Lead", "SuppressionEntry", "ProviderWebhookEvent", "Message", "ReplyProcessing", "KnowledgeItem", "QualificationFact", "QualificationEvaluation", "BookingOpportunity", "CalendarWebhookEvent", "IntegrationDelivery" CASCADE',
+    'TRUNCATE TABLE "ImportRowResult", "CampaignLead", "ImportBatch", "Campaign", "Lead", "SuppressionEntry", "ProviderWebhookEvent", "Message", "ReplyProcessing", "KnowledgeItem", "QualificationFact", "QualificationEvaluation", "BookingOpportunity", "CalendarWebhookEvent", "IntegrationDelivery", "OperatorAuditEvent" CASCADE',
   );
 }
 

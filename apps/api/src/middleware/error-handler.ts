@@ -1,7 +1,9 @@
 import type { ApiErrorBody } from '@cadentor/shared';
 import type { ErrorRequestHandler, RequestHandler } from 'express';
+import { isDatabaseUnavailableError } from '../db/errors.js';
 import {
   AppError,
+  DatabaseError,
   NotFoundError,
   PayloadTooLargeError,
   SAFE_ERROR_MESSAGES,
@@ -15,6 +17,8 @@ export const notFoundHandler: RequestHandler = (req, _res, next) => {
 /** Map anything thrown into an AppError. Unknown errors become INTERNAL_ERROR. */
 export function normalizeError(err: unknown): AppError {
   if (err instanceof AppError) return err;
+  // Database unreachable is an availability problem (503), not a server bug.
+  if (isDatabaseUnavailableError(err)) return new DatabaseError('Database unavailable', err);
 
   // express.json() (body-parser) failures carry a string `type`.
   const type = typeof err === 'object' && err !== null && 'type' in err ? err.type : undefined;

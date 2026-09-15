@@ -3,7 +3,7 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../../src/app.js';
-import { loadConfig } from '../../src/config/index.js';
+import { ADMIN_HEADERS, authConfig } from '../helpers/auth.js';
 import type { Database } from '../../src/db/client.js';
 import { apiRouter } from '../../src/routes/api.js';
 import { connectTestDatabase, resetDatabase, silentLogger } from '../helpers/db.js';
@@ -15,7 +15,7 @@ let baseUrl: string;
 
 beforeAll(async () => {
   db = connectTestDatabase();
-  const config = loadConfig({ NODE_ENV: 'test' });
+  const config = authConfig();
   const app = createApp({
     config,
     logger: silentLogger,
@@ -46,7 +46,7 @@ beforeEach(async () => {
 async function post(path: string, body?: unknown) {
   return fetch(`${baseUrl}${path}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...ADMIN_HEADERS },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 }
@@ -82,7 +82,7 @@ describe('campaign control API', () => {
 
     expect((await post('/0190d9b0-0000-7000-8000-000000000000/start')).status).toBe(404);
     expect((await post('/not-a-uuid/start')).status).toBe(404);
-    expect((await fetch(`${baseUrl}/not-a-uuid`)).status).toBe(404);
+    expect((await fetch(`${baseUrl}/not-a-uuid`, { headers: ADMIN_HEADERS })).status).toBe(404);
   });
 
   it('reports membership counts and hourly usage', async () => {
@@ -93,7 +93,9 @@ describe('campaign control API', () => {
     await stageMembers(db, created.id, [{}, {}, {}]);
     await admit(db, created.id, { now: new Date(), scanLimit: 10 });
 
-    const detail = (await (await fetch(`${baseUrl}/${created.id}`)).json()) as CampaignDetail;
+    const detail = (await (
+      await fetch(`${baseUrl}/${created.id}`, { headers: ADMIN_HEADERS })
+    ).json()) as CampaignDetail;
     expect(detail.status).toBe('ACTIVE');
     expect(detail.members.STAGED + detail.members.QUEUED).toBe(3);
     expect(detail.dispatch.hourlyLimit).toBe(2);

@@ -49,6 +49,8 @@ export interface QueueDefinition {
 
 export interface JobQueue {
   start(): Promise<void>;
+  /** True between a successful start() and stop(); drives the readiness check. */
+  isRunning(): boolean;
   /** Stop accepting work and wait for in-flight handlers (graceful shutdown). */
   stop(): Promise<void>;
   /** Returns the job ID, or null when deduplicated by idempotency key. */

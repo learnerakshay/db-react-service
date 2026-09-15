@@ -529,6 +529,14 @@ model ReplyProcessing {
   replyMessageId   String?               @unique @db.Uuid
   errorCode        String?               @db.VarChar(64)
   completedAt      DateTime?             @db.Timestamptz(3)
+  /// Human review resolution (Phase 4 / Prompt 2). An ESCALATED record is an
+  /// open review while reviewResolvedAt is null. Written only by
+  /// modules/reviews/resolution.ts; the routed outcome above is never rewritten.
+  reviewResolvedAt DateTime?             @db.Timestamptz(3)
+  reviewResolution ReviewResolution?
+  /// Operator id from OPERATOR_TOKENS (never a credential).
+  reviewResolvedBy String?               @db.VarChar(64)
+  reviewNote       String?               @db.VarChar(500)
   createdAt        DateTime              @default(now()) @db.Timestamptz(3)
   updatedAt        DateTime              @updatedAt @db.Timestamptz(3)
 
@@ -542,6 +550,18 @@ model ReplyProcessing {
   @@index([status, createdAt])
   @@index([leadId, status])
   @@index([campaignLeadId, action])
+}
+
+/// How an operator closed a human review (Phase 4 / Prompt 2).
+enum ReviewResolution {
+  /// Clear human takeover and let eligible automation continue.
+  RESUME_AUTOMATION
+  /// Keep (or start) human takeover; the operator continues manually.
+  KEEP_HUMAN_TAKEOVER
+  /// Archive the membership through the transition service, where legal.
+  ARCHIVE
+  /// Handled outside the system; automation state unchanged.
+  MARK_HANDLED
 }
 
 enum KnowledgeCategory {
@@ -800,4 +820,45 @@ model IntegrationDelivery {
   /// Delivery scan: due work, oldest first.
   @@index([status, nextAttemptAt])
   @@index([bookingOpportunityId])
+}
+
+// ---------------------------------------------------------------------------
+// Operator audit (Phase 4 / Prompt 2)
+// ---------------------------------------------------------------------------
+
+enum OperatorAction {
+  CAMPAIGN_START
+  CAMPAIGN_PAUSE
+  CAMPAIGN_RESUME
+  CAMPAIGN_COMPLETE
+  HUMAN_TAKEOVER
+  RESUME_AUTOMATION
+  REVIEW_RESOLVED
+  INTEGRATION_REQUEUE
+}
+
+enum AuditTargetType {
+  CAMPAIGN
+  LEAD
+  REVIEW
+  INTEGRATION
+}
+
+/// One row per successful manual operator action. Append-only (trigger in the
+/// migration SQL). Identifiers and minimal metadata only: no credentials,
+/// contact data or message bodies.
+model OperatorAuditEvent {
+  id         String          @id @default(uuid(7)) @db.Uuid
+  /// Operator id from OPERATOR_TOKENS.
+  actorId    String          @db.VarChar(64)
+  actorRole  String          @db.VarChar(16)
+  action     OperatorAction
+  targetType AuditTargetType
+  targetId   String          @db.VarChar(64)
+  metadata   Json
+  requestId  String?         @db.VarChar(128)
+  createdAt  DateTime        @default(now()) @db.Timestamptz(3)
+
+  @@index([createdAt])
+  @@index([targetType, targetId, createdAt])
 }

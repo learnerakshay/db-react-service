@@ -1,13 +1,17 @@
 import {
   CAMPAIGN_ACTIONS,
+  type CampaignAction,
   type CampaignDetail,
   type CampaignOverviewResponse,
   type CampaignSummary,
+  type OperatorAction,
 } from '@cadentor/shared';
 import { Router } from 'express';
 import { z } from 'zod';
 import type { Campaign } from '../generated/prisma/client.js';
 import { NotFoundError } from '../lib/errors.js';
+import { operatorOf, requireRole } from '../middleware/auth.js';
+import { recordOperatorAction } from '../modules/audit/audit.js';
 import { campaignConfigSchema, createCampaign } from '../modules/campaigns/campaigns.js';
 import { applyCampaignAction } from '../modules/campaigns/lifecycle.js';
 import { getCampaignOverview } from '../modules/campaigns/overview.js';
@@ -22,10 +26,18 @@ function campaignIdParam(value: string): string {
   return parsed.data;
 }
 
-export function campaignsRouter({ db, config }: ApiRouterDependencies): Router {
+const CAMPAIGN_AUDIT_ACTION: Readonly<Record<CampaignAction, OperatorAction>> = {
+  start: 'CAMPAIGN_START',
+  pause: 'CAMPAIGN_PAUSE',
+  resume: 'CAMPAIGN_RESUME',
+  complete: 'CAMPAIGN_COMPLETE',
+};
+
+export function campaignsRouter({ db, config, logger }: ApiRouterDependencies): Router {
   const router = Router();
 
-  router.post('/', async (req, res) => {
+  // Creating a campaign fixes its messaging and qualification config: ADMIN only.
+  router.post('/', requireRole('ADMIN', logger), async (req, res) => {
     const campaign = await createCampaign(db, config.campaign, req.body);
     res.status(201).json(toCampaignSummary(campaign));
   });
@@ -82,10 +94,36 @@ export function campaignsRouter({ db, config }: ApiRouterDependencies): Router {
     res.json(body);
   });
 
-  // POST /:id/start | /:id/pause | /:id/resume | /:id/complete
+  // POST /:id/start | /:id/pause | /:id/resume | /:id/complete (OPERATOR+).
+  // The lifecycle service decides legality; the audit row commits with the change,
+  // so a rejected or repeated action (409) leaves no audit record.
   for (const action of CAMPAIGN_ACTIONS) {
     router.post(`/:id/${action}`, async (req, res) => {
-      const campaign = await applyCampaignAction(db, campaignIdParam(req.params.id), action);
+      const campaignId = campaignIdParam(req.params.id);
+      const actor = operatorOf(req);
+      const requestId = typeof req.id === 'string' ? req.id : undefined;
+      const campaign = await db.$transaction(async (tx) => {
+        const updated = await applyCampaignAction(tx, campaignId, action);
+        await recordOperatorAction(tx, {
+          actor,
+          action: CAMPAIGN_AUDIT_ACTION[action],
+          targetType: 'CAMPAIGN',
+          targetId: campaignId,
+          requestId,
+          metadata: { status: updated.status },
+        });
+        return updated;
+      });
+      logger.info(
+        {
+          requestId,
+          campaignId,
+          operatorId: actor.id,
+          operation: `campaign.${action}`,
+          status: campaign.status,
+        },
+        'campaign lifecycle action applied',
+      );
       res.json(toCampaignSummary(campaign));
     });
   }

@@ -2,11 +2,15 @@ import type {
   IntegrationHealth,
   IntegrationHealthResponse,
   IntegrationKey,
+  RequeueBlockedResponse,
 } from '@cadentor/shared';
-import { Panel, ResourceView, StatusBadge } from '../../components/ui';
+import { useState } from 'react';
+import { ErrorNotice } from '../../components/Feedback';
+import { Button, ConfirmPrompt, Panel, ResourceView, StatusBadge } from '../../components/ui';
 import { useResource } from '../../hooks/useResource';
-import { apiGet } from '../../lib/api';
+import { apiGet, apiPost, describeError } from '../../lib/api';
 import { formatTime, humanize } from '../../lib/format';
+import { useOperatorSession } from '../../lib/operator';
 import { conversationHref } from '../../lib/route';
 
 const REFRESH_MS = 60_000;
@@ -30,6 +34,16 @@ const COUNT_TONE: Readonly<Record<string, string>> = {
 const loadHealth = (signal: AbortSignal) =>
   apiGet<IntegrationHealthResponse>('/api/v1/integrations/health', { signal });
 
+/** Blocked deliveries exist for a destination whose provider is now configured. */
+function hasRecoverableBlocked(data: IntegrationHealthResponse): boolean {
+  return data.integrations.some(
+    (integration) =>
+      integration.key !== 'CALENDAR' &&
+      integration.configured &&
+      (integration.counts.BLOCKED ?? 0) > 0,
+  );
+}
+
 export function IntegrationHealthPanel() {
   const health = useResource(loadHealth, REFRESH_MS);
   return (
@@ -37,6 +51,7 @@ export function IntegrationHealthPanel() {
       <ResourceView resource={health}>
         {(data) => (
           <>
+            {hasRecoverableBlocked(data) && <RequeueBlocked onDone={health.reload} />}
             <div className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-4">
               {data.integrations.map((integration) => (
                 <IntegrationCard key={integration.key} integration={integration} />
@@ -93,6 +108,69 @@ export function IntegrationHealthPanel() {
         )}
       </ResourceView>
     </Panel>
+  );
+}
+
+/** ADMIN recovery: requeue deliveries blocked only because a provider was missing. */
+function RequeueBlocked({ onDone }: { onDone: () => void }) {
+  const { operator } = useOperatorSession();
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  if (operator.role !== 'ADMIN') {
+    return (
+      <p className="border-b border-zinc-800 px-4 py-2 text-xs text-zinc-500">
+        Blocked deliveries can be requeued now that a provider is configured. Ask an administrator.
+      </p>
+    );
+  }
+
+  const run = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await apiPost<RequeueBlockedResponse>('/api/v1/integrations/requeue-blocked');
+      setMessage(`${result.requeued} blocked deliveries requeued.`);
+      setConfirming(false);
+      onDone();
+    } catch (err) {
+      setError(describeError(err instanceof Error ? err : new Error(String(err))));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-wrap items-center gap-3 border-b border-zinc-800 px-4 py-2 text-xs text-zinc-400">
+      <span>Deliveries were blocked while a now-configured provider was missing.</span>
+      {confirming ? (
+        <ConfirmPrompt
+          message="Requeue them for delivery? Failed deliveries are not touched."
+          confirmLabel="Requeue blocked"
+          busy={busy}
+          onConfirm={() => {
+            void run();
+          }}
+          onCancel={() => {
+            setConfirming(false);
+          }}
+        />
+      ) : (
+        <Button
+          variant="warning"
+          disabled={busy}
+          onClick={() => {
+            setConfirming(true);
+          }}
+        >
+          Requeue blocked deliveries
+        </Button>
+      )}
+      {message !== null && <span className="text-emerald-300">{message}</span>}
+      {error !== null && <ErrorNotice message={error} />}
+    </div>
   );
 }
 

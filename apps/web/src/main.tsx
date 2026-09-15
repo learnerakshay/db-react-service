@@ -1,5 +1,6 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
+import { AuthGate } from './components/AuthGate';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { MissionControl } from './pages/MissionControl';
 import './index.css';
@@ -12,7 +13,9 @@ if (!rootElement) {
 createRoot(rootElement).render(
   <StrictMode>
     <ErrorBoundary>
-      <MissionControl />
+      <AuthGate>
+        <MissionControl />
+      </AuthGate>
     </ErrorBoundary>
   </StrictMode>,
 );

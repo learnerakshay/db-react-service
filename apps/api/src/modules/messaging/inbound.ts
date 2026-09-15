@@ -11,6 +11,7 @@ import {
 } from '../../generated/prisma/enums.js';
 import type { InboundMessageEvent } from '../../providers/messaging/index.js';
 import { canTransitionCampaignLead, transitionCampaignLead } from '../campaigns/membership.js';
+import { cancelOpenBookingOffers } from '../conversion/booking.js';
 import { normalizePhone } from '../leads/phone.js';
 import { addSuppression, findSuppressed } from '../suppression/suppression.js';
 import { isHardOptOut } from './opt-out.js';
@@ -215,6 +216,8 @@ export async function applyHardOptOut(
         },
         now,
       );
+      // An opted-out lead must not keep a live booking link (Phase 4 / Prompt 2).
+      await cancelOpenBookingOffers(tx, membership.id, now);
     }
   }
 }

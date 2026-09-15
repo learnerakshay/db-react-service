@@ -19,10 +19,8 @@ export interface CalendarWebhookDeps {
  * POST /api/v1/webhooks/calendar/:provider
  *
  * Signature first; nothing in the payload is parsed or trusted before it.
- * The raw body is kept as text for verification. Note: `application/json`
- * bodies are consumed by the app-level JSON parser before this router, so a
- * provider that signs raw JSON fails verification (403) until raw-body capture
- * is added there together with its adapter.
+ * The raw body (any content type, including JSON) is kept as text for
+ * verification: the app-level JSON parser skips webhook paths (Phase 4 / Prompt 2).
  */
 export function calendarWebhooksRouter(deps: CalendarWebhookDeps): Router {
   const router = Router();

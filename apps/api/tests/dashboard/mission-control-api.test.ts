@@ -1,6 +1,6 @@
 import type {
   ApiErrorBody,
-  AutomationState,
+  AutomationChangeResponse,
   CampaignOverviewResponse,
   CampaignRow,
   CampaignSummary,
@@ -16,7 +16,6 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../../src/app.js';
-import { loadConfig } from '../../src/config/index.js';
 import type { Database } from '../../src/db/client.js';
 import { applyBookingEvent } from '../../src/modules/conversion/booking-events.js';
 import { processIntegrationDelivery } from '../../src/modules/integrations/deliveries.js';
@@ -33,8 +32,9 @@ import { stageMembers } from '../helpers/dispatch.js';
 import { FakeMessagingProvider } from '../helpers/messaging.js';
 import { deliveryDeps, FakeCrm } from '../helpers/operations.js';
 import { contactedLead, receive } from '../helpers/replies.js';
+import { ADMIN_HEADERS, authConfig } from '../helpers/auth.js';
 
-const config = loadConfig({ NODE_ENV: 'test' });
+const config = authConfig();
 const OPTIONS = { transactionTimeoutMs: 30_000 };
 const UNKNOWN_ID = '0190d9b0-0000-7000-8000-000000000000';
 /** Internal fields that must never reach Mission Control responses. */
@@ -93,7 +93,7 @@ async function get<T>(
   path: string,
   cast: (body: unknown) => T = asJson,
 ): Promise<{ status: number; body: T }> {
-  const res = await fetch(`${baseUrl}${path}`);
+  const res = await fetch(`${baseUrl}${path}`, { headers: ADMIN_HEADERS });
   return { status: res.status, body: cast(await res.json()) };
 }
 
@@ -104,7 +104,7 @@ async function post<T>(
 ): Promise<{ status: number; body: T }> {
   const res = await fetch(`${baseUrl}${path}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...ADMIN_HEADERS },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   return { status: res.status, body: cast(await res.json()) };
@@ -492,28 +492,36 @@ describe('read-only guarantees and takeover control', () => {
   it('persists human takeover durably and resumes automation on request', async () => {
     const { lead } = await contactedLead(db, new FakeMessagingProvider());
 
-    const taken = await post<AutomationState>(`/leads/${lead.id}/takeover`);
+    const taken = await post<AutomationChangeResponse>(`/leads/${lead.id}/takeover`);
     expect(taken.status).toBe(200);
-    expect(taken.body.mode).toBe('HUMAN_TAKEOVER');
-    expect(taken.body.pausedAt).not.toBeNull();
-    // Repeating the takeover keeps the original time.
-    expect((await post<AutomationState>(`/leads/${lead.id}/takeover`)).body).toEqual(taken.body);
+    expect(taken.body.changed).toBe(true);
+    expect(taken.body.automation.mode).toBe('HUMAN_TAKEOVER');
+    // Repeating the takeover keeps the original time and changes nothing.
+    const repeated = await post<AutomationChangeResponse>(`/leads/${lead.id}/takeover`);
+    expect(repeated.body).toEqual({ ...taken.body, changed: false });
+    expect(await db.operatorAuditEvent.count({ where: { action: 'HUMAN_TAKEOVER' } })).toBe(1);
 
     // Durable: a separate connection (as after a restart) sees the same state.
     const restarted = connectTestDatabase();
     try {
       const stored = await restarted.lead.findUniqueOrThrow({ where: { id: lead.id } });
-      expect(stored.automationPausedAt?.toISOString()).toBe(taken.body.pausedAt);
+      expect(stored.automationPausedAt?.toISOString()).toBe(taken.body.automation.pausedAt);
     } finally {
       await restarted.$disconnect();
     }
-    expect((await get<LeadDetail>(`/leads/${lead.id}`)).body.automation).toEqual(taken.body);
+    expect((await get<LeadDetail>(`/leads/${lead.id}`)).body.automation).toEqual(
+      taken.body.automation,
+    );
     expect(
       (await get<ConversationDetail>(`/conversations/${lead.id}`)).body.lead.automation,
-    ).toEqual(taken.body);
+    ).toEqual(taken.body.automation);
 
-    const resumed = await post<AutomationState>(`/leads/${lead.id}/resume-automation`);
-    expect(resumed.body).toEqual({ mode: 'AUTOMATION_ACTIVE', pausedAt: null });
+    const resumed = await post<AutomationChangeResponse>(`/leads/${lead.id}/resume-automation`);
+    expect(resumed.body).toEqual({
+      automation: { mode: 'AUTOMATION_ACTIVE', pausedAt: null },
+      changed: true,
+      resolvedReviews: 0,
+    });
     expect(
       (await db.lead.findUniqueOrThrow({ where: { id: lead.id } })).automationPausedAt,
     ).toBeNull();

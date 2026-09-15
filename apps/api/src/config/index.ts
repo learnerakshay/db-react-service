@@ -1,4 +1,5 @@
 import { parseEnv, type Env } from './env.js';
+import { parseOperatorTokens, type OperatorCredential } from './operators.js';
 
 /**
  * The only place in the API that reads `process.env` is the entrypoint, which
@@ -13,6 +14,18 @@ export interface AppConfig {
     corsOrigins: string[];
     jsonBodyLimit: string;
     shutdownTimeoutMs: number;
+    /** Proxy hops trusted for `req.ip` (0 = none). */
+    trustProxy: number;
+  };
+  auth: {
+    /** Empty = no operator can sign in (all protected routes answer 401). */
+    operators: readonly OperatorCredential[];
+    /** Invalid bearer tokens allowed per client IP per window before 429. */
+    failureLimit: number;
+    failureWindowMs: number;
+    /** State-changing operator requests per operator per window. */
+    mutationLimit: number;
+    mutationWindowMs: number;
   };
   database: {
     /** Undefined outside production when not configured. */
@@ -212,6 +225,10 @@ const OPERATIONS_JOB_RETRY_LIMIT = 2;
 const OPERATIONS_JOB_RETRY_DELAY_SECONDS = 30;
 /** Must exceed one provider call plus two short transactions. */
 const OPERATIONS_JOB_EXPIRE_IN_SECONDS = 120;
+const AUTH_FAILURE_LIMIT = 10;
+const AUTH_FAILURE_WINDOW_MS = 15 * 60_000;
+const OPERATOR_MUTATION_LIMIT = 60;
+const OPERATOR_MUTATION_WINDOW_MS = 60_000;
 const DASHBOARD_CONVERSATION_MESSAGE_LIMIT = 200;
 const DASHBOARD_ACTIVITY_LIMIT = 30;
 const DASHBOARD_PROBLEM_LIMIT = 20;
@@ -229,6 +246,14 @@ export function loadConfig(source: Record<string, string | undefined>): AppConfi
       corsOrigins: [env.WEB_URL ?? DEV_WEB_URL],
       jsonBodyLimit: JSON_BODY_LIMIT,
       shutdownTimeoutMs: SHUTDOWN_TIMEOUT_MS,
+      trustProxy: env.TRUST_PROXY,
+    },
+    auth: {
+      operators: operatorCredentials(env.OPERATOR_TOKENS),
+      failureLimit: AUTH_FAILURE_LIMIT,
+      failureWindowMs: AUTH_FAILURE_WINDOW_MS,
+      mutationLimit: OPERATOR_MUTATION_LIMIT,
+      mutationWindowMs: OPERATOR_MUTATION_WINDOW_MS,
     },
     database: { url: env.DATABASE_URL },
     providers: {
@@ -331,4 +356,10 @@ export function loadConfig(source: Record<string, string | undefined>): AppConfi
       leadDetailLimit: DASHBOARD_LEAD_DETAIL_LIMIT,
     },
   };
+}
+
+/** Already validated by parseEnv; an invalid value never reaches this point. */
+function operatorCredentials(raw: string | undefined): readonly OperatorCredential[] {
+  const parsed = parseOperatorTokens(raw);
+  return parsed.ok ? parsed.operators : [];
 }

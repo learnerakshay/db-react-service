@@ -3,6 +3,14 @@ import { loadConfig } from '../src/config/index.js';
 import { parseEnv } from '../src/config/env.js';
 import { ConfigurationError } from '../src/lib/errors.js';
 
+const PRODUCTION = {
+  NODE_ENV: 'production',
+  DATABASE_URL: 'postgresql://db/app',
+  WEB_URL: 'https://app.example.com',
+  API_URL: 'https://api.example.com',
+  OPERATOR_TOKENS: `admin:ADMIN:${'c'.repeat(64)}`,
+};
+
 function configError(source: Record<string, string | undefined>): ConfigurationError {
   try {
     parseEnv(source);
@@ -37,20 +45,49 @@ describe('parseEnv', () => {
     expect(env.CAMPAIGN_HOURLY_DISPATCH_LIMIT).toBe(25);
   });
 
-  it('does not require future provider variables', () => {
-    expect(() =>
-      parseEnv({
-        NODE_ENV: 'production',
-        DATABASE_URL: 'postgresql://db/app',
-        WEB_URL: 'https://app.example.com',
-      }),
-    ).not.toThrow();
+  it('does not require credentials for disabled providers', () => {
+    expect(() => parseEnv(PRODUCTION)).not.toThrow();
   });
 
-  it('requires DATABASE_URL and WEB_URL in production, naming both', () => {
+  it('requires DATABASE_URL, WEB_URL and OPERATOR_TOKENS in production, naming each', () => {
     const err = configError({ NODE_ENV: 'production' });
     expect(err.message).toContain('DATABASE_URL: is required in production');
     expect(err.message).toContain('WEB_URL: is required in production');
+    expect(err.message).toContain('OPERATOR_TOKENS: is required in production');
+  });
+
+  it('rejects unsafe production HTTP and CORS configuration', () => {
+    expect(configError({ ...PRODUCTION, API_URL: 'http://api.example.com' }).message).toContain(
+      'API_URL: must be an https URL in production',
+    );
+    expect(configError({ ...PRODUCTION, WEB_URL: 'http://ops.example.com' }).message).toContain(
+      'WEB_URL: must be an https URL in production',
+    );
+    expect(configError({ WEB_URL: 'https://ops.example.com/app?x=1' }).message).toContain(
+      'WEB_URL: must be a bare origin',
+    );
+  });
+
+  it('rejects malformed or ambiguous operator tokens without echoing them', () => {
+    const hash = 'a'.repeat(64);
+    expect(configError({ OPERATOR_TOKENS: `alice:ROOT:${hash}` }).message).toContain(
+      'OPERATOR_TOKENS: entry 1 must be',
+    );
+    expect(configError({ OPERATOR_TOKENS: 'alice:ADMIN:plaintext-token' }).message).not.toContain(
+      'plaintext-token',
+    );
+    expect(
+      configError({ OPERATOR_TOKENS: `alice:ADMIN:${hash},alice:OPERATOR:${'b'.repeat(64)}` })
+        .message,
+    ).toContain('operator ids must be unique');
+    expect(
+      configError({ OPERATOR_TOKENS: `alice:ADMIN:${hash},bob:OPERATOR:${hash}` }).message,
+    ).toContain('each operator must have its own token');
+  });
+
+  it('rejects an enabled SMS provider without credentials', () => {
+    const err = configError({ ...PRODUCTION, SMS_PROVIDER: 'twilio' });
+    expect(err.message).toContain('SMS_AUTH_TOKEN: is required when SMS_PROVIDER is set');
   });
 
   it('rejects invalid values with the key name', () => {

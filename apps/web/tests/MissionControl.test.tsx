@@ -6,13 +6,17 @@ import type {
   IntegrationHealthResponse,
   LeadDetail,
   Page,
+  ReviewItem,
 } from '@cadentor/shared';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AuthGate } from '../src/components/AuthGate';
 import { MissionControl } from '../src/pages/MissionControl';
 
 type Reply = [status: number, body: unknown];
-type Routes = Record<string, object | ((url: URL) => Reply)>;
+type Routes = Record<string, object | ((url: URL, init?: RequestInit) => Reply)>;
+
+const TOKEN = 'operator-token-for-web-tests-0001';
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -23,20 +27,26 @@ function jsonResponse(status: number, body: unknown): Response {
 
 /** Routes keyed by "METHOD /path"; unknown routes answer 404 like the API. */
 function mockApi(routes: Routes) {
+  const all: Routes = { 'GET /api/v1/auth/me': { id: 'ops', role: 'OPERATOR' }, ...routes };
   const fetchMock = vi.fn((input: string, init?: RequestInit) => {
     const url = new URL(input);
-    const route = routes[`${init?.method ?? 'GET'} ${url.pathname}`];
+    const route = all[`${init?.method ?? 'GET'} ${url.pathname}`];
     const [status, body]: Reply =
       route === undefined
         ? [404, { error: { code: 'NOT_FOUND', message: 'Not mocked' } }]
         : typeof route === 'function'
-          ? (route as (url: URL) => Reply)(url)
+          ? (route as (url: URL, init?: RequestInit) => Reply)(url, init)
           : [200, route];
     return Promise.resolve(jsonResponse(status, body));
   });
   vi.stubGlobal('fetch', fetchMock);
   return fetchMock;
 }
+
+const headersOf = (init: RequestInit | undefined) =>
+  (init?.headers ?? {}) as Record<string, string>;
+const bodyOf = (init: RequestInit | undefined): unknown =>
+  typeof init?.body === 'string' ? JSON.parse(init.body) : undefined;
 
 function page<T>(items: T[], total = items.length, pageSize = 25, current = 1): Page<T> {
   return { items, total, page: current, pageSize };
@@ -114,23 +124,77 @@ const overviewRoutes = (campaigns: Page<CampaignRow>): Routes => ({
   'GET /api/v1/dashboard/overview': METRICS,
   'GET /api/v1/dashboard/campaigns': campaigns,
   'GET /api/v1/integrations/health': HEALTH,
+  'GET /api/v1/audit': page([]),
 });
 
-function renderAt(hash: string) {
+function renderApp(hash: string) {
   window.location.hash = hash;
-  return render(<MissionControl />);
+  return render(
+    <AuthGate>
+      <MissionControl />
+    </AuthGate>,
+  );
 }
+
+beforeEach(() => {
+  window.sessionStorage.setItem('cadentor.operatorToken', TOKEN);
+});
 
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  window.sessionStorage.clear();
   window.location.hash = '';
+});
+
+describe('operator sign-in', () => {
+  it('asks for a token, verifies it with the API and then opens Mission Control', async () => {
+    window.sessionStorage.clear();
+    const fetchMock = mockApi(overviewRoutes(page([])));
+    renderApp('#/overview');
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText('Operator token'), { target: { value: TOKEN } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+
+    expect(await screen.findByText('ops')).toBeDefined();
+    const me = fetchMock.mock.calls.find(([url]) => new URL(url).pathname === '/api/v1/auth/me');
+    expect(headersOf(me?.[1]).Authorization).toBe(`Bearer ${TOKEN}`);
+    expect(await screen.findByRole('region', { name: 'Key metrics' })).toBeDefined();
+  });
+
+  it('rejects an invalid token and returns to sign-in when a session is revoked', async () => {
+    window.sessionStorage.clear();
+    mockApi({
+      'GET /api/v1/auth/me': () => [401, { error: { code: 'UNAUTHORIZED', message: 'nope' } }],
+    });
+    renderApp('#/overview');
+    fireEvent.change(screen.getByLabelText('Operator token'), { target: { value: 'bad-token' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    expect(
+      await screen.findByText('That token was not accepted. Check it and try again.'),
+    ).toBeDefined();
+    expect(window.sessionStorage.getItem('cadentor.operatorToken')).toBeNull();
+
+    cleanup();
+    window.sessionStorage.setItem('cadentor.operatorToken', TOKEN);
+    mockApi({
+      ...overviewRoutes(page([])),
+      'GET /api/v1/dashboard/overview': () => [
+        401,
+        { error: { code: 'UNAUTHORIZED', message: 'Authentication required' } },
+      ],
+    });
+    renderApp('#/overview');
+    expect(await screen.findByText('Your session ended. Sign in again.')).toBeDefined();
+    expect(screen.getByLabelText('Operator token')).toBeDefined();
+  });
 });
 
 describe('Mission Control overview', () => {
   it('renders KPI metrics and integration states from the API', async () => {
     mockApi(overviewRoutes(page([ACTIVE_CAMPAIGN])));
-    renderAt('#/overview');
+    renderApp('#/overview');
 
     const metrics = await screen.findByRole('region', { name: 'Key metrics' });
     expect(await within(metrics).findByText('1,234')).toBeDefined();
@@ -142,15 +206,16 @@ describe('Mission Control overview', () => {
     expect(screen.getByText('Provider not configured — 3 blocked (not sent)')).toBeDefined();
     expect(screen.getByText('No failing or blocked deliveries.')).toBeDefined();
     expect(await screen.findByRole('link', { name: 'Spring' })).toBeDefined();
+    expect(await screen.findByText('No operator actions recorded yet.')).toBeDefined();
   });
 
   it('renders empty states safely', async () => {
     mockApi(overviewRoutes(page([])));
-    renderAt('#/overview');
+    renderApp('#/overview');
     expect(await screen.findByText('No campaigns yet.')).toBeDefined();
   });
 
-  it('renders API errors instead of blank panels', async () => {
+  it('shows a clear service-unavailable state for 503 responses', async () => {
     mockApi({
       ...overviewRoutes(page([])),
       'GET /api/v1/dashboard/overview': () => [
@@ -158,9 +223,46 @@ describe('Mission Control overview', () => {
         { error: { code: 'DATABASE_ERROR', message: 'Database is unavailable' } },
       ],
     });
-    renderAt('#/overview');
+    renderApp('#/overview');
     const alerts = await screen.findAllByRole('alert');
-    expect(alerts.map((alert) => alert.textContent)).toContain('Database is unavailable');
+    expect(alerts.map((alert) => alert.textContent)).toContain(
+      'Service unavailable: the database cannot be reached. Retrying automatically.',
+    );
+  });
+
+  it('offers blocked-delivery recovery only to ADMIN operators, with confirmation', async () => {
+    const recoverable: IntegrationHealthResponse = {
+      integrations: [
+        {
+          key: 'OWNER_NOTIFICATION',
+          configured: true,
+          state: 'HEALTHY',
+          counts: { PENDING: 0, PROCESSING: 0, COMPLETED: 0, RETRY: 0, FAILED: 0, BLOCKED: 2 },
+        },
+      ],
+      problems: [],
+    };
+    mockApi({ ...overviewRoutes(page([])), 'GET /api/v1/integrations/health': recoverable });
+    renderApp('#/overview');
+    expect(await screen.findByText(/Ask an administrator/)).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Requeue blocked deliveries' })).toBeNull();
+
+    cleanup();
+    const fetchMock = mockApi({
+      ...overviewRoutes(page([])),
+      'GET /api/v1/auth/me': { id: 'admin', role: 'ADMIN' },
+      'GET /api/v1/integrations/health': recoverable,
+      'POST /api/v1/integrations/requeue-blocked': {
+        requeued: 2,
+        byDestination: { CRM: 0, OWNER_NOTIFICATION: 2, POST_BOOKING_HANDOFF: 0 },
+      },
+    });
+    renderApp('#/overview');
+    fireEvent.click(await screen.findByRole('button', { name: 'Requeue blocked deliveries' }));
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+    const dialog = screen.getByRole('alertdialog', { name: 'Requeue blocked' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Requeue blocked' }));
+    expect(await screen.findByText('2 blocked deliveries requeued.')).toBeDefined();
   });
 });
 
@@ -170,7 +272,7 @@ describe('campaign controls', () => {
       ...overviewRoutes(page([ACTIVE_CAMPAIGN])),
       'POST /api/v1/campaigns/c1/complete': { ...ACTIVE_CAMPAIGN, status: 'COMPLETED' },
     });
-    renderAt('#/overview');
+    renderApp('#/overview');
 
     fireEvent.click(await screen.findByRole('button', { name: 'Complete Spring' }));
     const posts = () => fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST');
@@ -185,7 +287,7 @@ describe('campaign controls', () => {
     });
   });
 
-  it('shows backend lifecycle errors', async () => {
+  it('shows backend lifecycle and permission errors', async () => {
     mockApi({
       ...overviewRoutes(page([ACTIVE_CAMPAIGN])),
       'POST /api/v1/campaigns/c1/pause': () => [
@@ -193,9 +295,61 @@ describe('campaign controls', () => {
         { error: { code: 'CONFLICT', message: 'Cannot pause a PAUSED campaign' } },
       ],
     });
-    renderAt('#/overview');
+    renderApp('#/overview');
     fireEvent.click(await screen.findByRole('button', { name: 'Pause Spring' }));
     expect(await screen.findByText('Cannot pause a PAUSED campaign')).toBeDefined();
+  });
+});
+
+describe('human review queue', () => {
+  const REVIEW: ReviewItem = {
+    processingId: 'r1',
+    leadId: 'l1',
+    leadName: 'Dana Smith',
+    campaign: { id: 'c1', name: 'Spring' },
+    membershipStatus: 'STEP_1_SENT',
+    inbound: { id: 'm1', body: 'hmm maybe?', at: '2026-09-15T09:00:00.000Z' },
+    escalationReason: 'LOW_CONFIDENCE',
+    classification: 'AMBIGUOUS',
+    confidence: 0.3,
+    createdAt: '2026-09-15T09:00:01.000Z',
+    automation: { mode: 'AUTOMATION_ACTIVE', pausedAt: null },
+    state: 'OPEN',
+    resolution: null,
+  };
+
+  it('resolves a review through the API with the chosen resolution and note', async () => {
+    const fetchMock = mockApi({
+      'GET /api/v1/reviews': page([REVIEW]),
+      'POST /api/v1/reviews/r1/resolve': {
+        changed: true,
+        resolvedCount: 1,
+        automation: { mode: 'AUTOMATION_ACTIVE', pausedAt: null },
+        membershipStatus: null,
+      },
+    });
+    renderApp('#/reviews');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Resolve review for Dana Smith' }));
+    const form = screen.getByRole('form', { name: 'Resolve review for Dana Smith' });
+    fireEvent.click(within(form).getByLabelText(/RESUME AUTOMATION/));
+    fireEvent.change(within(form).getByLabelText(/Note/), { target: { value: 'Spoke by phone' } });
+    fireEvent.click(within(form).getByRole('button', { name: 'Confirm resume automation' }));
+
+    await waitFor(() => {
+      const post = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST');
+      expect(post?.[0]).toContain('/api/v1/reviews/r1/resolve');
+      expect(bodyOf(post?.[1])).toEqual({
+        resolution: 'RESUME_AUTOMATION',
+        note: 'Spoke by phone',
+      });
+    });
+  });
+
+  it('renders an empty queue safely', async () => {
+    mockApi({ 'GET /api/v1/reviews': page([]) });
+    renderApp('#/reviews');
+    expect(await screen.findByText('No conversations are waiting for human review.')).toBeDefined();
   });
 });
 
@@ -263,7 +417,7 @@ describe('conversation inspector', () => {
     memberships: [],
   };
 
-  it('paginates the list, shows history and takes over a lead', async () => {
+  it('paginates the list, shows history and takes over a lead once', async () => {
     const fetchMock = mockApi({
       'GET /api/v1/conversations': (url: URL): Reply => [
         200,
@@ -277,11 +431,12 @@ describe('conversation inspector', () => {
       'GET /api/v1/conversations/l1': THREAD,
       'GET /api/v1/leads/l1': LEAD,
       'POST /api/v1/leads/l1/takeover': {
-        mode: 'HUMAN_TAKEOVER',
-        pausedAt: '2026-09-15T10:00:00Z',
+        automation: { mode: 'HUMAN_TAKEOVER', pausedAt: '2026-09-15T10:00:00Z' },
+        changed: true,
+        resolvedReviews: 0,
       },
     });
-    renderAt('#/conversations/l1');
+    renderApp('#/conversations/l1');
 
     const history = await screen.findByRole('list', { name: 'Message history' });
     expect(within(history).getByText('Sounds good')).toBeDefined();
@@ -297,28 +452,23 @@ describe('conversation inspector', () => {
       ).toBe(true);
     });
 
-    fireEvent.click(within(thread).getByRole('button', { name: 'Take over' }));
+    const takeOver = within(thread).getByRole('button', { name: 'Take over' });
+    fireEvent.click(takeOver);
+    fireEvent.click(takeOver);
     await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.some(
-          ([url, init]) =>
-            init?.method === 'POST' && new URL(url).pathname === '/api/v1/leads/l1/takeover',
-        ),
-      ).toBe(true);
+      const posts = fetchMock.mock.calls.filter(
+        ([url, init]) =>
+          init?.method === 'POST' && new URL(url).pathname === '/api/v1/leads/l1/takeover',
+      );
+      expect(posts).toHaveLength(1);
+      expect(headersOf(posts[0]?.[1]).Authorization).toBe(`Bearer ${TOKEN}`);
     });
   });
 
-  it('renders an empty conversation list and review queue safely', async () => {
-    mockApi({
-      'GET /api/v1/conversations': page([]),
-      'GET /api/v1/reviews': page([]),
-    });
-    renderAt('#/conversations');
+  it('renders an empty conversation list safely', async () => {
+    mockApi({ 'GET /api/v1/conversations': page([]) });
+    renderApp('#/conversations');
     expect(await screen.findByText('No conversations yet.')).toBeDefined();
     expect(screen.getByText('Select a conversation to inspect it.')).toBeDefined();
-
-    cleanup();
-    renderAt('#/reviews');
-    expect(await screen.findByText('No conversations are waiting for human review.')).toBeDefined();
   });
 });

@@ -23,6 +23,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check:secrets": "node scripts/check-secrets.mjs",
+    "operator:token": "node scripts/operator-token.mjs",
     "db:local": "node scripts/local-db.mjs",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",

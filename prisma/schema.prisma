@@ -43,6 +43,10 @@ model Lead {
   /// IANA timezone, only when the source genuinely provided one.
   timezone           String?    @db.VarChar(64)
   status             LeadStatus @default(ACTIVE)
+  /// Operator human takeover (Phase 4): while set, no automated conversational
+  /// or campaign message is sent to this lead. Opt-out handling and
+  /// suppression still apply. Null = automation active.
+  automationPausedAt DateTime?  @db.Timestamptz(3)
   firstImportBatchId String?    @db.Uuid
   createdAt          DateTime   @default(now()) @db.Timestamptz(3)
   updatedAt          DateTime   @updatedAt @db.Timestamptz(3)
@@ -401,6 +405,8 @@ model Message {
   /// Reply processing scan: unprocessed inbound messages, oldest first.
   @@index([direction, createdAt])
   @@index([leadId, createdAt])
+  /// Mission Control campaign activity and last-activity lookups.
+  @@index([campaignId, createdAt])
   @@index([campaignLeadId])
   @@index([status, sendingStartedAt])
 }
@@ -493,6 +499,8 @@ enum EscalationReason {
   AI_UNAVAILABLE
   LEAD_SUPPRESSED
   INBOUND_TOO_OLD
+  /// An operator has taken over the conversation (Phase 4).
+  HUMAN_TAKEOVER
 }
 
 /// One logical processing run per inbound message (UNIQUE inboundMessageId).
@@ -530,6 +538,8 @@ model ReplyProcessing {
   campaignLead   CampaignLead? @relation(fields: [campaignLeadId], references: [id], onDelete: Restrict)
 
   @@index([status, claimedAt])
+  /// Mission Control review queue: escalations, newest first.
+  @@index([status, createdAt])
   @@index([leadId, status])
   @@index([campaignLeadId, action])
 }

@@ -1,4 +1,9 @@
-import { CAMPAIGN_ACTIONS, type CampaignDetail, type CampaignSummary } from '@cadentor/shared';
+import {
+  CAMPAIGN_ACTIONS,
+  type CampaignDetail,
+  type CampaignOverviewResponse,
+  type CampaignSummary,
+} from '@cadentor/shared';
 import { Router } from 'express';
 import { z } from 'zod';
 import type { Campaign } from '../generated/prisma/client.js';
@@ -6,6 +11,7 @@ import { NotFoundError } from '../lib/errors.js';
 import { campaignConfigSchema, createCampaign } from '../modules/campaigns/campaigns.js';
 import { applyCampaignAction } from '../modules/campaigns/lifecycle.js';
 import { getCampaignOverview } from '../modules/campaigns/overview.js';
+import { getCampaignActivity, getCampaignMetrics } from '../modules/dashboard/metrics.js';
 import type { ApiRouterDependencies } from './api.js';
 
 const campaignIdSchema = z.uuid();
@@ -36,6 +42,42 @@ export function campaignsRouter({ db, config }: ApiRouterDependencies): Router {
         admittedLastHour: overview.admittedLastHour,
         remainingThisHour: Math.max(0, hourlyLimit - overview.admittedLastHour),
       },
+    };
+    res.json(body);
+  });
+
+  // Mission Control campaign detail (Phase 4): lifecycle, metrics, capacity, activity.
+  router.get('/:id/overview', async (req, res) => {
+    const now = new Date();
+    const overview = await getCampaignOverview(db, campaignIdParam(req.params.id), now);
+    const { id } = overview.campaign;
+    const [metrics, activity] = await Promise.all([
+      getCampaignMetrics(db, [id], now),
+      getCampaignActivity(db, id, config.dashboard.activityLimit),
+    ]);
+    const row = metrics.get(id);
+    if (row === undefined) throw new NotFoundError('Campaign not found');
+    const { admittedLastHour, members, enrolled, step1Sent, outboundSent, repliedLeads } = row;
+    const campaignMetrics = {
+      members,
+      enrolled,
+      step1Sent,
+      outboundSent,
+      repliedLeads,
+      qualified: row.qualified,
+      booked: row.booked,
+    };
+    const campaign = toCampaignSummary(overview.campaign);
+    const hourlyLimit = campaign.config.hourlyDispatchLimit;
+    const body: CampaignOverviewResponse = {
+      campaign,
+      metrics: campaignMetrics,
+      dispatch: {
+        hourlyLimit,
+        admittedLastHour,
+        remainingThisHour: Math.max(0, hourlyLimit - admittedLastHour),
+      },
+      activity,
     };
     res.json(body);
   });

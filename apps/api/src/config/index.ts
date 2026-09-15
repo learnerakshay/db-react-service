@@ -133,6 +133,16 @@ export interface AppConfig {
     jobRetryDelaySeconds: number;
     jobExpireInSeconds: number;
   };
+  dashboard: {
+    /** Latest messages returned per conversation. */
+    conversationMessageLimit: number;
+    /** Items in a campaign's recent activity feed. */
+    activityLimit: number;
+    /** Recent FAILED/RETRY/BLOCKED deliveries in integration health. */
+    problemLimit: number;
+    /** Memberships and deliveries returned per lead detail. */
+    leadDetailLimit: number;
+  };
 }
 
 export const SERVICE_NAME = 'cadentor-reactivation-api';
@@ -202,6 +212,10 @@ const OPERATIONS_JOB_RETRY_LIMIT = 2;
 const OPERATIONS_JOB_RETRY_DELAY_SECONDS = 30;
 /** Must exceed one provider call plus two short transactions. */
 const OPERATIONS_JOB_EXPIRE_IN_SECONDS = 120;
+const DASHBOARD_CONVERSATION_MESSAGE_LIMIT = 200;
+const DASHBOARD_ACTIVITY_LIMIT = 30;
+const DASHBOARD_PROBLEM_LIMIT = 20;
+const DASHBOARD_LEAD_DETAIL_LIMIT = 50;
 
 export function loadConfig(source: Record<string, string | undefined>): AppConfig {
   const env = parseEnv(source);
@@ -309,6 +323,12 @@ export function loadConfig(source: Record<string, string | undefined>): AppConfi
       jobRetryLimit: OPERATIONS_JOB_RETRY_LIMIT,
       jobRetryDelaySeconds: OPERATIONS_JOB_RETRY_DELAY_SECONDS,
       jobExpireInSeconds: OPERATIONS_JOB_EXPIRE_IN_SECONDS,
+    },
+    dashboard: {
+      conversationMessageLimit: DASHBOARD_CONVERSATION_MESSAGE_LIMIT,
+      activityLimit: DASHBOARD_ACTIVITY_LIMIT,
+      problemLimit: DASHBOARD_PROBLEM_LIMIT,
+      leadDetailLimit: DASHBOARD_LEAD_DETAIL_LIMIT,
     },
   };
 }

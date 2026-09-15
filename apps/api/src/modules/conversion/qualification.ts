@@ -119,7 +119,7 @@ export async function processQualification(
           status: true,
           campaignId: true,
           leadId: true,
-          lead: { select: { phone: true, email: true } },
+          lead: { select: { phone: true, email: true, automationPausedAt: true } },
           campaign: { select: { config: true } },
         },
       },
@@ -148,6 +148,7 @@ export async function processQualification(
     inbound.direction !== MessageDirection.INBOUND ||
     inbound.body === null ||
     member.status !== CampaignLeadStatus.ENGAGED ||
+    member.lead.automationPausedAt !== null ||
     inbound.replyProcessing?.status !== ReplyProcessingStatus.COMPLETED ||
     action === null ||
     !QUALIFYING_REPLY_ACTIONS.includes(action) ||
@@ -238,10 +239,17 @@ export async function processQualification(
   const fromNumber = E164.test(inbound.toNumber) ? inbound.toNumber : deps.outbound.fromNumber;
   const applied = await db.$transaction(
     async (tx: DbClient) => {
-      const locked = await tx.$queryRaw<{ status: CampaignLeadStatus }[]>`
-        SELECT "status" FROM "CampaignLead" WHERE "id" = ${member.id}::uuid FOR UPDATE`;
+      const locked = await tx.$queryRaw<
+        { status: CampaignLeadStatus; automationPausedAt: Date | null }[]
+      >`
+        SELECT cl."status", l."automationPausedAt"
+        FROM "CampaignLead" cl JOIN "Lead" l ON l."id" = cl."leadId"
+        WHERE cl."id" = ${member.id}::uuid
+        FOR UPDATE OF cl FOR SHARE OF l`;
       if (locked[0]?.status !== CampaignLeadStatus.ENGAGED)
         return { kind: 'state_changed' as const };
+      // Phase 4 human takeover: no evaluation, transition or message while paused.
+      if (locked[0].automationPausedAt !== null) return { kind: 'paused' as const };
 
       const existing = await tx.qualificationEvaluation.findUnique({
         where: { inboundMessageId: inbound.id },
@@ -378,6 +386,7 @@ export async function processQualification(
     },
   );
 
+  if (applied.kind === 'paused') return notEligible;
   if (applied.kind === 'state_changed') {
     return { outcome: 'STATE_CHANGED', evaluationId: null, result: null, sends: [] };
   }
@@ -434,6 +443,7 @@ export async function findInboundNeedingQualification(
         },
       },
       campaignLead: { is: { status: CampaignLeadStatus.ENGAGED } },
+      lead: { is: { automationPausedAt: null } },
     },
     orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
     take: limit,

@@ -26,15 +26,28 @@ interface RequestOptions {
  * The only place the web app calls `fetch` against the API.
  * Response bodies are typed by the shared contracts in @cadentor/shared.
  */
-export async function apiGet<T>(path: string, { signal }: RequestOptions = {}): Promise<T> {
+export function apiGet<T>(path: string, { signal }: RequestOptions = {}): Promise<T> {
+  return request<T>(path, { headers: { Accept: 'application/json' }, signal });
+}
+
+/** Operator controls. The server validates every state change; the UI never assumes one. */
+export function apiPost<T>(path: string, body?: unknown): Promise<T> {
+  return request<T>(path, {
+    method: 'POST',
+    headers:
+      body === undefined
+        ? { Accept: 'application/json' }
+        : { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+
+async function request<T>(path: string, init: RequestInit): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(`${config.apiUrl}${path}`, {
-      headers: { Accept: 'application/json' },
-      signal,
-    });
+    response = await fetch(`${config.apiUrl}${path}`, init);
   } catch (err) {
-    if (signal?.aborted) throw err;
+    if (init.signal?.aborted) throw err;
     throw new ApiClientError(0, 'NETWORK_ERROR', 'Unable to reach the API');
   }
 

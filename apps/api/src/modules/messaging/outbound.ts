@@ -40,6 +40,7 @@ export type Step1SendOutcome =
   | 'SKIPPED_CAMPAIGN_NOT_ACTIVE'
   | 'SKIPPED_NO_TEMPLATE'
   | 'SKIPPED_OUTSIDE_WINDOW'
+  | 'SKIPPED_HUMAN_TAKEOVER'
   | 'ALREADY_HANDLED'
   | 'IN_FLIGHT';
 
@@ -65,6 +66,7 @@ interface MemberRow {
   firstName: string | null;
   lastName: string | null;
   timezone: string | null;
+  automationPausedAt: Date | null;
 }
 
 type Prepared =
@@ -124,12 +126,13 @@ async function prepareStep1(
       const rows = await tx.$queryRaw<MemberRow[]>`
         SELECT cl."id", cl."status", cl."campaignId", cl."leadId",
                c."status" AS "campaignStatus", c."config",
-               l."phone", l."email", l."firstName", l."lastName", l."timezone"
+               l."phone", l."email", l."firstName", l."lastName", l."timezone",
+               l."automationPausedAt"
         FROM "CampaignLead" cl
         JOIN "Campaign" c ON c."id" = cl."campaignId"
         JOIN "Lead" l ON l."id" = cl."leadId"
         WHERE cl."id" = ${campaignLeadId}::uuid
-        FOR UPDATE OF cl FOR SHARE OF c`;
+        FOR UPDATE OF cl FOR SHARE OF c, l`;
       const member = rows[0];
       if (member === undefined) return done('SKIPPED_NOT_QUEUED', null);
 
@@ -185,6 +188,8 @@ async function prepareStep1(
         );
         return done('CANCELLED_SUPPRESSED', messageId);
       }
+      // Phase 4 human takeover (lead row held FOR SHARE): stays QUEUED until resumed.
+      if (member.automationPausedAt !== null) return done('SKIPPED_HUMAN_TAKEOVER', existingId);
 
       const rendered = renderStep1Message(template, member);
       if (!rendered.ok) {
@@ -345,6 +350,7 @@ export async function findStep1SendCandidates(
     where: {
       status: CampaignLeadStatus.QUEUED,
       campaign: { status: CampaignStatus.ACTIVE },
+      lead: { automationPausedAt: null },
       messages: {
         none: {
           direction: MessageDirection.OUTBOUND,

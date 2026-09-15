@@ -323,7 +323,7 @@ async function decide(
       ? null
       : await db.lead.findUnique({
           where: { id: inbound.leadId },
-          select: { phone: true, email: true },
+          select: { phone: true, email: true, automationPausedAt: true },
         });
   const senderPhone = lead?.phone ?? senderE164(inbound);
   const suppressed = await findSuppressed(db, {
@@ -398,6 +398,17 @@ async function decide(
     templates,
     qualificationQuestionOutstanding,
   });
+
+  // Phase 4 human takeover: the operator owns the conversation. Only opt-out
+  // handling still runs; everything else waits for the human.
+  if (lead !== null && lead.automationPausedAt !== null && route.action !== 'OPT_OUT') {
+    return makeDecision({
+      ...base,
+      status: 'ESCALATED',
+      action: ReplyAction.HUMAN_REVIEW,
+      escalationReason: EscalationReason.HUMAN_TAKEOVER,
+    });
+  }
 
   switch (route.action) {
     case 'OPT_OUT':

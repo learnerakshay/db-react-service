@@ -24,6 +24,7 @@ interface ReplyRow {
   campaignLeadId: string;
   membershipStatus: CampaignLeadStatus;
   email: string | null;
+  automationPausedAt: Date | null;
 }
 
 type Prepared =
@@ -48,13 +49,14 @@ export async function sendConversationalReply(
     async (tx): Promise<Prepared> => {
       const rows = await tx.$queryRaw<ReplyRow[]>`
         SELECT m."id", m."status", m."sendingStartedAt", m."toNumber", m."fromNumber", m."body",
-               m."campaignLeadId", cl."status" AS "membershipStatus", l."email"
+               m."campaignLeadId", cl."status" AS "membershipStatus", l."email",
+               l."automationPausedAt"
         FROM "Message" m
         JOIN "CampaignLead" cl ON cl."id" = m."campaignLeadId"
         JOIN "Lead" l ON l."id" = m."leadId"
         WHERE m."id" = ${replyMessageId}::uuid
           AND m."purpose" = 'CONVERSATIONAL_REPLY'::"MessagePurpose"
-        FOR UPDATE OF m, cl`;
+        FOR UPDATE OF m, cl FOR SHARE OF l`;
       const row = rows[0];
       if (row === undefined) return { kind: 'done', outcome: 'NOT_FOUND' };
 
@@ -100,6 +102,8 @@ export async function sendConversationalReply(
         }
         return cancel('SUPPRESSED');
       }
+      // Phase 4 human takeover: a stale automated reply is never sent later.
+      if (row.automationPausedAt !== null) return cancel('HUMAN_TAKEOVER');
       if (row.body === null) return cancel('EMPTY_BODY');
 
       await tx.message.update({

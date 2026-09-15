@@ -33,6 +33,7 @@ interface Row {
   email: string | null;
   opportunityId: string | null;
   opportunityStatus: BookingStatus | null;
+  automationPausedAt: Date | null;
 }
 
 type Prepared =
@@ -65,14 +66,15 @@ export async function sendConversionMessage(
       const rows = await tx.$queryRaw<Row[]>`
         SELECT m."id", m."status", m."purpose", m."sendingStartedAt", m."toNumber", m."fromNumber",
                m."body", m."campaignLeadId", cl."status" AS "membershipStatus", l."email",
-               bo."id" AS "opportunityId", bo."status" AS "opportunityStatus"
+               bo."id" AS "opportunityId", bo."status" AS "opportunityStatus",
+               l."automationPausedAt"
         FROM "Message" m
         JOIN "CampaignLead" cl ON cl."id" = m."campaignLeadId"
         JOIN "Lead" l ON l."id" = m."leadId"
         LEFT JOIN "BookingOpportunity" bo ON bo."linkMessageId" = m."id"
         WHERE m."id" = ${messageId}::uuid
           AND m."purpose" IN ('QUALIFICATION_QUESTION'::"MessagePurpose", 'BOOKING_LINK'::"MessagePurpose")
-        FOR UPDATE OF m, cl`;
+        FOR UPDATE OF m, cl FOR SHARE OF l`;
       const row = rows[0];
       if (row === undefined) return { kind: 'done', outcome: 'NOT_FOUND' };
 
@@ -121,6 +123,8 @@ export async function sendConversionMessage(
         );
         return cancel('SUPPRESSED');
       }
+      // Phase 4 human takeover: the operator owns the conversation.
+      if (row.automationPausedAt !== null) return cancel('HUMAN_TAKEOVER');
       if (row.body === null) return cancel('EMPTY_BODY');
 
       await tx.message.update({

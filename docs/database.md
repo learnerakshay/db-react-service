@@ -338,6 +338,18 @@ Job: `operations-tick` (every minute): enqueue `outbound-step2-send` per
 candidate (key = membership), run the archival pass, enqueue
 `integration-delivery` per due delivery (key = delivery id).
 
+## Mission Control (Phase 4 / Prompt 1)
+
+Migration `*_mission_control` (no hand-written invariants added):
+
+- `Lead.automationPausedAt` (nullable `timestamptz`): operator human takeover.
+  Written only by `setHumanTakeover` (`modules/leads/takeover.ts`); read under
+  `FOR SHARE` by every automated send path. See `docs/mission-control.md`.
+- `EscalationReason.HUMAN_TAKEOVER`: inbound message received while a human owns
+  the conversation.
+- Index `ReplyProcessing (status, createdAt)`: review queue, newest first.
+- Index `Message (campaignId, createdAt)`: campaign activity and last-activity lookups.
+
 ## Migration workflow
 
 | Situation                            | Command                                                     |

@@ -7,7 +7,12 @@
     height: 100%;
   }
 
+  html {
+    color-scheme: dark;
+  }
+
+  /* #09090b background, #18181b surfaces (zinc-900), #27272a borders (zinc-800). */
   body {
-    @apply bg-slate-950 text-slate-100 antialiased;
+    @apply bg-zinc-950 text-zinc-100 antialiased;
   }
 }

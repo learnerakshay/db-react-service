@@ -214,6 +214,21 @@ External Service
   `BLOCKED` (`NOT_CONFIGURED`). Do not add adapters without the user's choice.
 - One pg-boss cron (`operations-tick`) drives Step 2, archival and deliveries.
 
+## Mission Control rules
+
+- Dashboard metrics are defined once, server-side, in
+  `modules/dashboard/metrics.ts` and documented in `docs/mission-control.md`.
+  The web app displays them; it never recomputes them.
+- Mission Control GET routes only read. Operator controls reuse the owning
+  service (`applyCampaignAction`, `setHumanTakeover`).
+- Human takeover is `Lead.automationPausedAt`, written only by
+  `setHumanTakeover` (`modules/leads/takeover.ts`). Every automated send or
+  conversational decision re-checks it (lead row `FOR SHARE`) right before
+  acting; new automated paths must do the same. Opt-out handling and
+  suppression always run regardless of takeover.
+- List endpoints are paginated (`MAX_PAGE_SIZE` in `@cadentor/shared`) with a
+  stable id tiebreak.
+
 ## Error & logging policy
 
 - Throw `AppError` subclasses from `apps/api/src/lib/errors.ts`. The error

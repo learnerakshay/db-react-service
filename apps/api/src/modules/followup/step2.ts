@@ -33,6 +33,7 @@ export type Step2SendOutcome =
   | 'SKIPPED_REPLIED'
   | 'SKIPPED_HUMAN_REVIEW'
   | 'SKIPPED_OUTSIDE_WINDOW'
+  | 'SKIPPED_HUMAN_TAKEOVER'
   | 'ALREADY_HANDLED'
   | 'IN_FLIGHT';
 
@@ -66,6 +67,7 @@ interface MemberRow {
   firstName: string | null;
   lastName: string | null;
   timezone: string | null;
+  automationPausedAt: Date | null;
 }
 
 type Prepared =
@@ -125,12 +127,13 @@ async function prepareStep2(
       const rows = await tx.$queryRaw<MemberRow[]>`
         SELECT cl."id", cl."status", cl."campaignId", cl."leadId",
                c."status" AS "campaignStatus", c."config",
-               l."phone", l."email", l."firstName", l."lastName", l."timezone"
+               l."phone", l."email", l."firstName", l."lastName", l."timezone",
+               l."automationPausedAt"
         FROM "CampaignLead" cl
         JOIN "Campaign" c ON c."id" = cl."campaignId"
         JOIN "Lead" l ON l."id" = cl."leadId"
         WHERE cl."id" = ${campaignLeadId}::uuid
-        FOR UPDATE OF cl FOR SHARE OF c`;
+        FOR UPDATE OF cl FOR SHARE OF c, l`;
       const member = rows[0];
       if (member === undefined) return done('SKIPPED_NOT_ELIGIBLE', null);
 
@@ -207,6 +210,8 @@ async function prepareStep2(
         );
         return done('CANCELLED_SUPPRESSED', messageId);
       }
+      // Phase 4 human takeover (lead row held FOR SHARE): no closeout while paused.
+      if (member.automationPausedAt !== null) return done('SKIPPED_HUMAN_TAKEOVER', existingId);
 
       const rendered = renderStep1Message(template, member);
       if (!rendered.ok) {
@@ -374,6 +379,7 @@ export async function findStep2Candidates(
     JOIN "Lead" l ON l."id" = cl."leadId"
     WHERE cl."status" = 'STEP_1_SENT'::"CampaignLeadStatus"
       AND c."status" = 'ACTIVE'::"CampaignStatus"
+      AND l."automationPausedAt" IS NULL
       AND c."config" -> 'messages' -> 'step2' IS NOT NULL
       AND cl."statusChangedAt"
           + make_interval(secs => (c."config" ->> 'followUpDelayHours')::float8 * 3600)

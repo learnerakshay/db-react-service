@@ -193,6 +193,7 @@ const app = createApp({
           db,
           config,
           logger,
+          integrationProviders: integrations,
           ...(messaging === undefined
             ? {}
             : { messagingProviders: new Map([[messaging.provider.name, messaging.provider]]) }),

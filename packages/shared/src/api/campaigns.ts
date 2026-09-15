@@ -44,9 +44,46 @@ export interface ReplyMessageTemplates {
   handoff?: string;
 }
 
+/** One operator rule on a qualification field. Strings compare case-insensitively. */
+export type QualificationRequirement =
+  | { kind: 'present' }
+  | { kind: 'equals'; value: string | number | boolean }
+  | { kind: 'oneOf'; values: string[] }
+  | { kind: 'min'; value: number }
+  | { kind: 'max'; value: number };
+
+/** Every configured field is required; requirements add value rules. */
+export interface QualificationFieldConfig {
+  /** `^[a-z][A-Za-z0-9_]{0,19}$` */
+  key: string;
+  type: 'string' | 'number' | 'boolean';
+  /** What the extractor looks for. Never decides qualification. */
+  description: string;
+  /** Fixed text sent once when this is the next missing field. */
+  question?: string;
+  requirements: QualificationRequirement[];
+}
+
+/** Operator-supplied booking link. `message` contains `{{bookingUrl}}` exactly once. */
+export interface BookingLinkConfig {
+  /** Calendar provider whose verified webhooks confirm bookings. */
+  provider: string;
+  /** https scheduling page; the booking reference is added as `referenceParam`. */
+  url: string;
+  referenceParam: string;
+  message: string;
+}
+
 /** Operational settings snapshotted onto a campaign at creation. */
 export interface CampaignConfig {
-  messages?: { step1: Step1MessageTemplate; replies?: ReplyMessageTemplates };
+  messages?: {
+    step1: Step1MessageTemplate;
+    /** No-response closeout sent `followUpDelayHours` after Step 1; same template rules. */
+    step2?: Step1MessageTemplate;
+    replies?: ReplyMessageTemplates;
+  };
+  qualification?: { fields: QualificationFieldConfig[] };
+  booking?: BookingLinkConfig;
   /** Fallback IANA timezone for leads without one; null = no fallback. */
   timezone: string | null;
   /** Recipient-local send window, HH:MM 24h, end exclusive. */

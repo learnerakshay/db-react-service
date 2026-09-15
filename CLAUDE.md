@@ -19,8 +19,9 @@ This file governs all Claude Code work in this repository. Read it before every 
 | PHASE 1 / Prompt 1 — Data Foundation + Ingestion                      | COMPLETE / VERIFIED / FROZEN        |
 | PHASE 1 / Prompt 2 — Campaign Queue, Throttling, Dispatch Eligibility | COMPLETE / VERIFIED / FROZEN        |
 | PHASE 2 / Prompt 1 — Messaging + Webhook Foundation                   | COMPLETE / VERIFIED / FROZEN        |
-| PHASE 2 / Prompt 2 — Intent Classification + Grounded Reply Engine    | COMPLETE — awaiting freeze sign-off |
-| PHASE 3 — Conversion / Booking + Operational Automation               | NOT STARTED                         |
+| PHASE 2 / Prompt 2 — Intent Classification + Grounded Reply Engine    | COMPLETE / VERIFIED / FROZEN        |
+| PHASE 3 / Prompt 1 — Qualification + Booking Conversion Engine        | COMPLETE / VERIFIED / FROZEN        |
+| PHASE 3 / Prompt 2 — CRM Sync + Owner Notifications + Follow-up       | COMPLETE — awaiting freeze sign-off |
 | PHASE 4 — Mission Control + Production Hardening                      | NOT STARTED                         |
 | ENVIRONMENT VERIFICATION                                              | NOT STARTED                         |
 | DEMO / PROOF                                                          | NOT STARTED                         |
@@ -177,6 +178,41 @@ External Service
   grounded answers. Never send free-form model text.
 - Do not transition members to `QUALIFIED` or `BOOKED` from reply processing;
   Phase 3 owns conversion.
+
+## Conversion rules
+
+- Qualification is decided only by `evaluateQualification`
+  (`modules/conversion/evaluator.ts`) from operator rules in the campaign
+  config and stored facts. AI only extracts candidate facts
+  (`extraction.ts`: strict schema, evidence from the lead's own words).
+- Facts never overwrite a higher-precedence source (`facts.ts`).
+- One evaluation per inbound message; one question per membership and field;
+  one automatic booking offer per membership; one link message per opportunity.
+- Questions and links are persisted before sending and sent only through
+  `sendConversionMessage` (expected membership state + suppression re-check).
+- `BOOKED` is set only in `applyBookingEvent` from a verified provider event;
+  a sent link or positive intent never books. Cancellation returns
+  `BOOKED → QUALIFIED` and keeps the opportunity row.
+- No calendar vendor is selected: do not add an adapter without the user's choice.
+- Qualification answers: `routeReply` routes a reply to `QUALIFICATION_ANSWER`
+  only while `hasOutstandingQualificationQuestion` is true (ENGAGED, latest
+  evaluation pending, its question accepted). Opt-outs and declines keep their
+  normal rules. STEP_2_SENT and QUALIFIED are open conversations; BOOKED is not.
+
+## Operational automation rules
+
+- Step 2 goes only through `sendStep2Message` (`modules/followup/step2.ts`),
+  one per membership (`<campaignLeadId>:CAMPAIGN_STEP_2`); `STEP_2_SENT` only
+  after provider acceptance. Delay = campaign `followUpDelayHours`.
+- Final archival only through `archiveDormantMember` (`archival.ts`), after
+  campaign `archiveDelayDays` with no inbound reply, escalation or booking.
+- CRM, owner notifications and the Service 3 handoff are `IntegrationDelivery`
+  outbox rows written in the booking-event transaction and delivered by
+  `processIntegrationDelivery`. They never change booking or membership state.
+  Unique `idempotencyKey` per logical action; providers receive it.
+- No CRM, notification or Service 3 vendor is selected: deliveries become
+  `BLOCKED` (`NOT_CONFIGURED`). Do not add adapters without the user's choice.
+- One pg-boss cron (`operations-tick`) drives Step 2, archival and deliveries.
 
 ## Error & logging policy
 

@@ -146,6 +146,19 @@ campaign: `"messages": { "replies": { "positive": "...", "decline": "...", "clar
 Questions are answered only from approved knowledge; anything uncertain is
 escalated for human review.
 
+Qualification and booking are configured per campaign:
+`"qualification": { "fields": [{ "key": "budget", "type": "number", "description": "Budget in USD", "question": "What budget are you working with?", "requirements": [{ "kind": "min", "value": 500 }] }] }`
+and `"booking": { "provider": "<calendar>", "url": "https://...", "message": "Book here: {{bookingUrl}}" }`.
+Engaged leads are asked configured questions, then deterministically qualified
+(→ booking link) or archived. `BOOKED` requires a verified calendar webhook;
+no calendar adapter exists yet.
+
+Step 2 closeout copy: `"messages": { "step2": { "body": "No worries at all, I'll close this out for now." } }`,
+sent `followUpDelayHours` after Step 1 without a reply; the member is archived
+`archiveDelayDays` after Step 2 without a reply. Bookings queue CRM, owner
+notification and Service 3 handoff deliveries; with no adapters configured
+they are recorded as `BLOCKED`.
+
 Step 1 copy is set per campaign at creation, e.g.
 `"config": { "messages": { "step1": { "body": "Hey {{firstName}}, are you still looking to {{outcome}}?", "variables": { "outcome": "get your gutters cleaned" }, "fallbacks": { "firstName": "there" } } } }`.
 Outbound sending requires `SMS_PROVIDER=twilio` with `SMS_ACCOUNT_ID`,
@@ -174,8 +187,10 @@ npm run test -w @cadentor/web
 **PHASE 1 / PROMPT 1 — DATA FOUNDATION + INGESTION:** complete, verified, frozen.
 **PHASE 1 / PROMPT 2 — CAMPAIGN QUEUE + THROTTLING:** complete, verified, frozen.
 **PHASE 2 / PROMPT 1 — MESSAGING + WEBHOOK FOUNDATION:** complete, verified, frozen.
-**PHASE 2 / PROMPT 2 — REPLY INTELLIGENCE:** complete, awaiting freeze sign-off.
-Next: **PHASE 3 / PROMPT 1 — Qualification + Booking Conversion Engine.**
+**PHASE 2 / PROMPT 2 — REPLY INTELLIGENCE:** complete, verified, frozen.
+**PHASE 3 / PROMPT 1 — QUALIFICATION + BOOKING:** complete, verified, frozen.
+**PHASE 3 / PROMPT 2 — OPERATIONAL AUTOMATION:** complete, awaiting freeze sign-off.
+Next: **PHASE 4 / PROMPT 1 — Mission Control Operator Dashboard.**
 See [CLAUDE.md](CLAUDE.md) for the phase registry.
 #   d b - r e a c t - s e r v i c e 
  

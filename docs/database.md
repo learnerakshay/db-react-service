@@ -54,6 +54,11 @@ migration** to make sure none of them are dropped:
   `Message_outbound_membership_purpose_key`), `ReplyProcessing_outcome_check`,
   `ReplyProcessing_confidence_check`, `ReplyProcessing_attempts_check`
   (in `20260914172036_reply_intelligence/migration.sql`)
+- partial unique index `BookingOpportunity_active_membership_key`,
+  `BookingOpportunity_state_check`, `QualificationEvaluation_result_check`,
+  `QualificationFact_value_check`, `QualificationFact_source_message_check`
+  (in `20260915052514_qualification_booking/migration.sql`)
+- `IntegrationDelivery_state_check` (in `*_operational_automation/migration.sql`)
 
 ## Ingestion semantics
 
@@ -237,6 +242,101 @@ Permanent Step 1 failures: a non-retryable provider rejection or an unrenderable
 template moves the membership `QUEUED → DORMANT_ARCHIVED`; the outbound dispatch
 tick archives any members still stuck that way. UNCERTAIN and retryable PENDING
 sends are never archived.
+
+## Qualification + booking (Phase 3 / Prompt 1)
+
+Models:
+
+- `QualificationFact` — current value per membership and configured field
+  (UNIQUE `campaignLeadId, field`), `source` (`OPERATOR` > `IMPORT` = `SYSTEM` >
+  `CONVERSATION`), `observedAt`, `sourceMessageId`. Lower precedence never
+  overwrites higher; equal precedence only moves forward in `observedAt`.
+- `QualificationEvaluation` — one per triggering inbound message (UNIQUE
+  `inboundMessageId`): `result`, `missingFields`, `failedRequirements`,
+  `nextField`, facts used, `rulesHash` + `rulesSnapshot`, extraction outcome,
+  discarded fields, AI model/request id. No model reasoning.
+- `BookingOpportunity` — `OFFERED → CONFIRMED → CANCELLED` (or `EXPIRED`),
+  unguessable `bookingReference` (UNIQUE) placed on the link, `bookingUrl`,
+  `linkMessageId` (UNIQUE), external booking id (UNIQUE per `calendarProvider`),
+  appointment start/end/timezone, `sentAt`, `confirmedAt`, `cancelledAt`.
+  At most one OFFERED/CONFIRMED row per membership (partial unique index).
+- `CalendarWebhookEvent` — UNIQUE (`provider`, `eventKey = <kind>:<eventId>`),
+  outcome (`PROCESSED | ALREADY_APPLIED | UNMATCHED | MISMATCH | INVALID_STATE`),
+  booking id, reference and appointment timing; the booking audit trail.
+- `MessagePurpose.QUALIFICATION_QUESTION` (sendKey
+  `<campaignLeadId>:QUALIFICATION_QUESTION:<field>`, one per field) and
+  `BOOKING_LINK` (sendKey `<opportunityId>:BOOKING_LINK`).
+- `CampaignLeadStatus` edge `BOOKED → QUALIFIED` (verified cancellation).
+
+Qualification (`modules/conversion/qualification.ts`), per inbound message:
+
+1. **Eligible** (no AI): membership `ENGAGED`, campaign has `qualification`
+   rules, reply processing `COMPLETED` with `ENGAGE | ANSWER_QUESTION | CLARIFY`
+   (escalated conversations belong to a human), inbound ≤ 24h old, lead not suppressed.
+2. **Extract**: only fields not known from a higher-precedence source; strict
+   Zod schema (no extra keys); each value needs evidence copied from the lead's
+   messages (numbers must appear in it), otherwise discarded. Invalid output /
+   final AI failure → evaluation recorded with existing facts.
+3. **Apply** (transaction, `CampaignLead FOR UPDATE`): write facts, run
+   `evaluateQualification`, insert the evaluation, then
+   `PENDING_INFORMATION` → PENDING question for `nextField` (if configured, once per field);
+   `NOT_QUALIFIED` → `ENGAGED → DORMANT_ARCHIVED`;
+   `QUALIFIED` → `ENGAGED → QUALIFIED` + opportunity + PENDING booking-link message.
+4. **Send** via `sendConversionMessage` (lock message + membership, expected
+   state, suppression re-check under SHARE lock, SENDING claim; UNCERTAIN never resent).
+
+Booking events (`modules/conversion/booking-events.ts`), one transaction per
+verified event: insert event (duplicate → no-op); resolve the opportunity by
+reference and/or provider booking id (disagreement → `MISMATCH`); lock
+membership then opportunity; provider and invitee identity must match. Created
+(`OFFERED` + `QUALIFIED`) → `CONFIRMED` + `QUALIFIED → BOOKED`; rescheduled →
+same row updated; cancelled → `CANCELLED` (row kept) + `BOOKED → QUALIFIED`.
+No automatic re-offer after cancellation (one automatic offer per membership).
+
+Jobs: `conversion-tick` (every minute) enqueues `qualification-process` per
+eligible inbound message and `conversion-send` per PENDING question/link older than 60s.
+
+## Operational automation (Phase 3 / Prompt 2)
+
+Models / values:
+
+- `MessagePurpose.CAMPAIGN_STEP_2` — sendKey `<campaignLeadId>:CAMPAIGN_STEP_2` (one per membership).
+- `ReplyAction.QUALIFICATION_ANSWER` — reply routed to qualification; no generic reply sent.
+- `IntegrationDelivery` — outbox row per logical external action: UNIQUE
+  `idempotencyKey` (`<opportunityId|calendarEventId>:<eventType>:<destination>`),
+  `eventType` (`BOOKING_CONFIRMED | BOOKING_RESCHEDULED | BOOKING_CANCELLED`),
+  `destination` (`CRM | OWNER_NOTIFICATION | POST_BOOKING_HANDOFF`), payload
+  snapshot, `status` (`PENDING | PROCESSING | COMPLETED | RETRY | FAILED | BLOCKED`),
+  `attempts`, `claimedAt`, `nextAttemptAt`, `provider`, `lastErrorCode`,
+  `externalReference`, `completedAt`. Index (`status`, `nextAttemptAt`).
+
+Step 2 (`modules/followup/step2.ts`), like Step 1: lock membership, existing
+send → report; require STEP_1_SENT, ACTIVE campaign, `messages.step2`, Step 1
+accepted ≥ `followUpDelayHours` ago, no inbound from the lead since Step 1, no
+ESCALATED processing, send window; suppression under SHARE lock; claim SENDING;
+provider; ACCEPTED → `STEP_2_SENT`, retryable → PENDING, unknown → UNCERTAIN
+(never resent), permanent → FAILED + `DORMANT_ARCHIVED` (or OPTED_OUT for a
+provider opt-out).
+
+Archival (`modules/followup/archival.ts`): STEP_2_SENT (or STEP_1_SENT with an
+UNCERTAIN Step 2) whose Step 2 claim is ≥ `archiveDelayDays` old, no inbound
+from the lead since, no ESCALATED processing, no booking opportunity →
+`DORMANT_ARCHIVED`, re-checked under `FOR UPDATE`. Nothing is deleted.
+
+Booking outbox: `applyBookingEvent` writes deliveries in the same transaction
+when an event is PROCESSED — confirmed → CRM + owner + handoff (key per
+opportunity); rescheduled → owner + handoff (key per calendar event; no CRM,
+no second conversion); cancelled → CRM + owner + handoff (key per opportunity).
+
+Delivery (`modules/integrations/deliveries.ts`): claim under `FOR UPDATE`
+(final → no-op; live PROCESSING → stop; not due → stop; no provider → BLOCKED
+`NOT_CONFIGURED`; attempts exhausted → FAILED); provider call with the
+idempotency key outside the transaction; record for this attempt only:
+COMPLETED, RETRY (backoff 60s × 2^(attempt−1)), or FAILED after 5 attempts / permanent.
+
+Job: `operations-tick` (every minute): enqueue `outbound-step2-send` per
+candidate (key = membership), run the archival pass, enqueue
+`integration-delivery` per due delivery (key = delivery id).
 
 ## Migration workflow
 

@@ -4,6 +4,7 @@ import { timeOfDay, timezone } from '../../config/env.js';
 import type { DbClient } from '../../db/client.js';
 import { CampaignStatus } from '../../generated/prisma/enums.js';
 import { ConflictError, NotFoundError, ValidationError } from '../../lib/errors.js';
+import { bookingConfigSchema, qualificationConfigSchema } from '../conversion/config.js';
 import { step1TemplateSchema } from '../messaging/template.js';
 import { replyTemplatesSchema } from '../replies/reply-templates.js';
 
@@ -20,8 +21,17 @@ export const campaignConfigSchema = z
     archiveDelayDays: z.number().positive(),
     /** Outbound copy. Step 1 is not sent for campaigns without it. */
     messages: z
-      .object({ step1: step1TemplateSchema, replies: replyTemplatesSchema.optional() })
+      .object({
+        step1: step1TemplateSchema,
+        /** No-response closeout (Phase 3). Absent: no Step 2 and no follow-up archival. */
+        step2: step1TemplateSchema.optional(),
+        replies: replyTemplatesSchema.optional(),
+      })
       .optional(),
+    /** Deterministic qualification rules (Phase 3). Absent: members stay ENGAGED. */
+    qualification: qualificationConfigSchema.optional(),
+    /** Operator-supplied booking link (Phase 3). Absent: qualified members get no link. */
+    booking: bookingConfigSchema.optional(),
   })
   .refine((config) => config.sendWindow.start < config.sendWindow.end, {
     path: ['sendWindow', 'end'],
@@ -41,6 +51,8 @@ export const createCampaignSchema = z.object({
       archiveDelayDays: z.number(),
       // Validated by campaignConfigSchema after merging with defaults.
       messages: z.unknown(),
+      qualification: z.unknown(),
+      booking: z.unknown(),
     })
     .partial()
     .optional(),

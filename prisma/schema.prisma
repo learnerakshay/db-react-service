@@ -118,6 +118,10 @@ model CampaignLead {
   admission   DispatchAdmission?
   messages    Message[]
   replyProcessings ReplyProcessing[]
+  qualificationFacts       QualificationFact[]
+  qualificationEvaluations QualificationEvaluation[]
+  bookingOpportunities     BookingOpportunity[]
+  integrationDeliveries    IntegrationDelivery[]
 
   @@unique([campaignId, leadId])
   @@index([campaignId, status])
@@ -310,6 +314,12 @@ enum MessagePurpose {
   INBOUND_REPLY
   /// Automated reply to one inbound message (Phase 2 / Prompt 2).
   CONVERSATIONAL_REPLY
+  /// Configured question for one missing qualification field (Phase 3 / Prompt 1).
+  QUALIFICATION_QUESTION
+  /// Booking link for one booking opportunity (Phase 3 / Prompt 1).
+  BOOKING_LINK
+  /// Configured no-response closeout, one per membership (Phase 3 / Prompt 2).
+  CAMPAIGN_STEP_2
 }
 
 /// Outbound: PENDING → SENDING → ACCEPTED → SENT → DELIVERED, or FAILED,
@@ -382,6 +392,10 @@ model Message {
   replyProcessing    ReplyProcessing? @relation("ReplyProcessingInbound")
   /// Processing record that produced this message when it is an automated reply.
   producedByProcessing ReplyProcessing? @relation("ReplyProcessingReply")
+  /// Qualification evaluation triggered by this inbound message.
+  qualificationEvaluation QualificationEvaluation?
+  /// Booking opportunity whose link this outbound message carries.
+  bookingOpportunity      BookingOpportunity?
 
   @@unique([provider, providerMessageId])
   /// Reply processing scan: unprocessed inbound messages, oldest first.
@@ -459,6 +473,9 @@ enum ReplyAction {
   CLOSE_DECLINED
   CLARIFY
   HUMAN_REVIEW
+  /// Answer to an outstanding qualification question; handled by qualification,
+  /// no generic reply sent (Phase 3 / Prompt 2).
+  QUALIFICATION_ANSWER
 }
 
 enum EscalationReason {
@@ -548,4 +565,229 @@ model KnowledgeItem {
   campaign Campaign? @relation(fields: [campaignId], references: [id], onDelete: Restrict)
 
   @@index([active, campaignId])
+}
+
+// ---------------------------------------------------------------------------
+// Qualification + booking conversion (Phase 3 / Prompt 1)
+// ---------------------------------------------------------------------------
+
+/// Where a qualification fact came from. Precedence (high → low):
+/// OPERATOR, IMPORT = SYSTEM, CONVERSATION. Lower never overwrites higher.
+enum QualificationFactSource {
+  IMPORT
+  OPERATOR
+  CONVERSATION
+  SYSTEM
+}
+
+/// One current value per membership and configured qualification field.
+model QualificationFact {
+  id              String                  @id @default(uuid(7)) @db.Uuid
+  campaignLeadId  String                  @db.Uuid
+  /// Field key from the campaign's qualification config.
+  field           String                  @db.VarChar(20)
+  /// JSON string, number or boolean, validated against the field type.
+  value           Json
+  source          QualificationFactSource
+  /// Inbound message the value was extracted from (CONVERSATION only).
+  sourceMessageId String?                 @db.Uuid
+  /// When the value was stated; equal-precedence writes only move forward.
+  observedAt      DateTime                @db.Timestamptz(3)
+  createdAt       DateTime                @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime                @updatedAt @db.Timestamptz(3)
+
+  campaignLead CampaignLead @relation(fields: [campaignLeadId], references: [id], onDelete: Restrict)
+
+  @@unique([campaignLeadId, field])
+}
+
+enum QualificationResult {
+  PENDING_INFORMATION
+  QUALIFIED
+  NOT_QUALIFIED
+}
+
+enum ExtractionOutcome {
+  EXTRACTED
+  /// Every configured field was already known from a non-conversation source.
+  NOT_REQUIRED
+  INVALID_OUTPUT
+  AI_UNAVAILABLE
+}
+
+/// One deterministic evaluation per triggering inbound message (UNIQUE).
+/// The result comes from evaluateQualification, never from the model.
+model QualificationEvaluation {
+  id                 String              @id @default(uuid(7)) @db.Uuid
+  campaignLeadId     String              @db.Uuid
+  inboundMessageId   String              @unique @db.Uuid
+  result             QualificationResult
+  missingFields      String[]
+  /// [{ field, requirement }] that failed.
+  failedRequirements Json
+  /// First missing field (config order) when PENDING_INFORMATION.
+  nextField          String?             @db.VarChar(20)
+  /// Fact values the evaluation used.
+  facts              Json
+  /// SHA-256 of the qualification rules snapshot.
+  rulesHash          String              @db.Char(64)
+  rulesSnapshot      Json
+  extraction         ExtractionOutcome
+  /// Extracted fields dropped: failed evidence checks or lower precedence.
+  discardedFields    String[]
+  aiModel            String?             @db.VarChar(100)
+  aiRequestId        String?             @db.VarChar(100)
+  errorCode          String?             @db.VarChar(64)
+  evaluatedAt        DateTime            @db.Timestamptz(3)
+  createdAt          DateTime            @default(now()) @db.Timestamptz(3)
+
+  campaignLead   CampaignLead @relation(fields: [campaignLeadId], references: [id], onDelete: Restrict)
+  inboundMessage Message      @relation(fields: [inboundMessageId], references: [id], onDelete: Restrict)
+
+  @@index([campaignLeadId, evaluatedAt])
+}
+
+/// OFFERED → CONFIRMED (verified provider booking) → CANCELLED; OFFERED → EXPIRED.
+enum BookingStatus {
+  OFFERED
+  CONFIRMED
+  CANCELLED
+  EXPIRED
+}
+
+/// A booking link offered to a QUALIFIED membership and, once a trusted
+/// provider event confirms it, the appointment. At most one OFFERED/CONFIRMED
+/// row per membership (partial unique index in the migration SQL).
+model BookingOpportunity {
+  id                  String        @id @default(uuid(7)) @db.Uuid
+  campaignLeadId      String        @db.Uuid
+  status              BookingStatus
+  /// Calendar provider name whose webhook events may confirm this booking.
+  calendarProvider    String        @db.VarChar(32)
+  /// Unguessable token placed on the booking link and echoed by the provider.
+  bookingReference    String        @unique @db.VarChar(64)
+  bookingUrl          String        @db.VarChar(1000)
+  linkMessageId       String?       @unique @db.Uuid
+  externalBookingId   String?       @db.VarChar(200)
+  appointmentStartAt  DateTime?     @db.Timestamptz(3)
+  appointmentEndAt    DateTime?     @db.Timestamptz(3)
+  appointmentTimezone String?       @db.VarChar(64)
+  /// Provider accepted the booking-link SMS (not proof of booking).
+  sentAt              DateTime?     @db.Timestamptz(3)
+  confirmedAt         DateTime?     @db.Timestamptz(3)
+  cancelledAt         DateTime?     @db.Timestamptz(3)
+  createdAt           DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime      @updatedAt @db.Timestamptz(3)
+
+  campaignLead CampaignLead           @relation(fields: [campaignLeadId], references: [id], onDelete: Restrict)
+  linkMessage  Message?               @relation(fields: [linkMessageId], references: [id], onDelete: Restrict)
+  events       CalendarWebhookEvent[]
+  deliveries   IntegrationDelivery[]
+
+  /// One confirmed appointment per provider booking identity.
+  @@unique([calendarProvider, externalBookingId])
+  @@index([campaignLeadId])
+}
+
+enum CalendarEventKind {
+  BOOKING_CREATED
+  BOOKING_RESCHEDULED
+  BOOKING_CANCELLED
+}
+
+enum CalendarEventOutcome {
+  PROCESSED
+  /// Same booking state already recorded; nothing changed.
+  ALREADY_APPLIED
+  /// No booking opportunity matches the reference or booking id.
+  UNMATCHED
+  /// Reference, booking id, provider or invitee identity disagree.
+  MISMATCH
+  /// Opportunity or membership is not in a state this event may change.
+  INVALID_STATE
+}
+
+/// Durable calendar webhook idempotency and booking audit. Identifiers and
+/// appointment timing only, never the raw payload.
+model CalendarWebhookEvent {
+  id                   String               @id @default(uuid(7)) @db.Uuid
+  provider             String               @db.VarChar(32)
+  eventKey             String               @db.VarChar(240)
+  kind                 CalendarEventKind
+  externalBookingId    String               @db.VarChar(200)
+  bookingReference     String?              @db.VarChar(64)
+  appointmentStartAt   DateTime?            @db.Timestamptz(3)
+  appointmentTimezone  String?              @db.VarChar(64)
+  outcome              CalendarEventOutcome
+  bookingOpportunityId String?              @db.Uuid
+  receivedAt           DateTime             @db.Timestamptz(3)
+
+  bookingOpportunity BookingOpportunity? @relation(fields: [bookingOpportunityId], references: [id], onDelete: Restrict)
+  deliveries         IntegrationDelivery[]
+
+  @@unique([provider, eventKey])
+  @@index([bookingOpportunityId])
+}
+
+// ---------------------------------------------------------------------------
+// Operational deliveries (Phase 3 / Prompt 2)
+// ---------------------------------------------------------------------------
+
+enum IntegrationEventType {
+  BOOKING_CONFIRMED
+  BOOKING_RESCHEDULED
+  BOOKING_CANCELLED
+}
+
+enum IntegrationDestination {
+  CRM
+  OWNER_NOTIFICATION
+  POST_BOOKING_HANDOFF
+}
+
+/// PENDING/RETRY → PROCESSING → COMPLETED | RETRY | FAILED.
+/// BLOCKED: no provider configured for the destination; nothing was sent.
+enum IntegrationDeliveryStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  RETRY
+  FAILED
+  BLOCKED
+}
+
+/// Durable outbox row for one logical external side effect of a booking event.
+/// Written in the booking transaction; delivered asynchronously. Failures here
+/// never change booking or membership state.
+model IntegrationDelivery {
+  id                   String                    @id @default(uuid(7)) @db.Uuid
+  /// `<opportunityId|calendarEventId>:<eventType>:<destination>`. UNIQUE: one logical action.
+  idempotencyKey       String                    @unique @db.VarChar(160)
+  eventType            IntegrationEventType
+  destination          IntegrationDestination
+  campaignLeadId       String                    @db.Uuid
+  bookingOpportunityId String                    @db.Uuid
+  calendarEventId      String?                   @db.Uuid
+  /// Minimal destination-specific data snapshot taken in the booking transaction.
+  payload              Json
+  status               IntegrationDeliveryStatus @default(PENDING)
+  /// Claims so far; a worker records results only for its own attempt.
+  attempts             Int                       @default(0)
+  claimedAt            DateTime?                 @db.Timestamptz(3)
+  nextAttemptAt        DateTime                  @db.Timestamptz(3)
+  /// Provider that handled the last attempt.
+  provider             String?                   @db.VarChar(32)
+  lastErrorCode        String?                   @db.VarChar(64)
+  externalReference    String?                   @db.VarChar(200)
+  completedAt          DateTime?                 @db.Timestamptz(3)
+  createdAt            DateTime                  @default(now()) @db.Timestamptz(3)
+  updatedAt            DateTime                  @updatedAt @db.Timestamptz(3)
+
+  campaignLead       CampaignLead          @relation(fields: [campaignLeadId], references: [id], onDelete: Restrict)
+  bookingOpportunity BookingOpportunity    @relation(fields: [bookingOpportunityId], references: [id], onDelete: Restrict)
+  calendarEvent      CalendarWebhookEvent? @relation(fields: [calendarEventId], references: [id], onDelete: Restrict)
+
+  /// Delivery scan: due work, oldest first.
+  @@index([status, nextAttemptAt])
+  @@index([bookingOpportunityId])
 }

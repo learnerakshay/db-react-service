@@ -18,6 +18,11 @@ export interface RouterInput {
   /** A clarification was already sent in this conversation. */
   clarificationAlreadySent: boolean;
   templates: ReplyTemplates;
+  /**
+   * The membership has an outstanding qualification question (Phase 3).
+   * Optional so frozen callers keep their behavior.
+   */
+  qualificationQuestionOutstanding?: boolean;
 }
 
 export type RouteDecision =
@@ -26,11 +31,19 @@ export type RouteDecision =
   | { action: 'ANSWER_QUESTION' }
   | { action: 'CLOSE_DECLINED'; reply: string | null }
   | { action: 'CLARIFY'; reply: string }
-  | { action: 'HUMAN_REVIEW'; reason: EscalationReason; engage: boolean };
+  | { action: 'HUMAN_REVIEW'; reason: EscalationReason; engage: boolean }
+  | { action: 'QUALIFICATION_ANSWER' };
 
+/**
+ * STEP_2_SENT (a reply to the closeout reopens the conversation) and QUALIFIED
+ * (questions/replies while a booking link is outstanding) were added in
+ * Phase 3 / Prompt 2. BOOKED stays closed: a human handles booked leads.
+ */
 const OPEN_CONVERSATION: readonly CampaignLeadStatus[] = [
   CampaignLeadStatus.STEP_1_SENT,
+  CampaignLeadStatus.STEP_2_SENT,
   CampaignLeadStatus.ENGAGED,
+  CampaignLeadStatus.QUALIFIED,
 ];
 
 const RESOLUTION_REASON: Readonly<Record<Exclude<InboundResolution, 'MATCHED'>, EscalationReason>> =
@@ -60,6 +73,23 @@ function review(reason: EscalationReason, engage = false): RouteDecision {
  */
 export function routeReply(input: RouterInput): RouteDecision {
   const { analysis, templates } = input;
+
+  // Phase 3: while a qualification question is outstanding, a reply that is not
+  // a decline, opt-out or confident question ("Dallas", "$700", "yes") is an
+  // answer for qualification, not generic ambiguity. Declines and opt-outs
+  // (confident or not) fall through to the unchanged rules below.
+  if (
+    input.qualificationQuestionOutstanding === true &&
+    input.resolution === InboundResolution.MATCHED &&
+    input.membershipStatus === CampaignLeadStatus.ENGAGED &&
+    !input.awaitingHumanReview &&
+    (analysis.classification === IntentClassification.AMBIGUOUS ||
+      analysis.classification === IntentClassification.POSITIVE_INTEREST ||
+      (analysis.classification === IntentClassification.SPECIFIC_QUESTION &&
+        analysis.confidence < input.confidenceThreshold))
+  ) {
+    return { action: 'QUALIFICATION_ANSWER' };
+  }
 
   if (analysis.confidence < input.confidenceThreshold)
     return review(EscalationReason.LOW_CONFIDENCE);

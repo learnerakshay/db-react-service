@@ -57,6 +57,38 @@ behavior without reshaping configuration.
     the CampaignLead transition map.
   - `imports/` — canonical ingestion service, CSV adapter, batch lifecycle.
 
+## Operational automation (Phase 3 / Prompt 2)
+
+```text
+operations-tick (pg-boss cron)
+  ├── followup/step2.ts      findStep2Candidates → outbound-step2-send → sendStep2Message
+  ├── followup/archival.ts   archiveDueMembers (transition service, under lock)
+  └── integrations/deliveries.ts  findDueDeliveries → integration-delivery
+                                  → CrmProvider | NotificationProvider | PostBookingHandoffProvider
+
+booking-events.ts (verified event) → IntegrationDelivery rows in the same transaction
+providers/integrations.ts: no CRM / notification / Service 3 adapter → BLOCKED deliveries
+
+replies/processor.ts → conversion/outstanding.ts → router: QUALIFICATION_ANSWER
+```
+
+## Qualification + booking (Phase 3 / Prompt 1)
+
+```text
+conversion-tick → qualification-process (per inbound message of an ENGAGED member)
+  → modules/conversion/qualification.ts
+      eligibility (no AI) → extraction.ts (AiProvider → strict Zod + evidence check)
+      facts.ts (precedence) → evaluator.ts (pure rules → result)
+      apply: evaluation, question | archive | QUALIFIED + booking.ts offer
+  → modules/conversion/sender.ts → MessagingProvider (same guarantees as replies)
+
+POST /api/v1/webhooks/calendar/:provider   (signature first; mounted only with a calendar adapter)
+  → modules/conversion/booking-events.ts   idempotent; the only path to BOOKED
+
+providers/calendar/index.ts (contract; no adapter — no vendor selected)
+providers/calendar/registry.ts (CALENDAR_PROVIDER set → startup error)
+```
+
 ## Reply intelligence (Phase 2 / Prompt 2)
 
 ```text

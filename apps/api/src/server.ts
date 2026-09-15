@@ -14,6 +14,16 @@ import {
   registerOutboundWorkers,
   scheduleOutboundDispatch,
 } from './jobs/outbound-dispatch.js';
+import {
+  conversionJobQueues,
+  registerConversionWorkers,
+  scheduleConversion,
+} from './jobs/conversion.js';
+import {
+  operationsJobQueues,
+  registerOperationsWorkers,
+  scheduleOperations,
+} from './jobs/operations.js';
 import type { JobQueue } from './jobs/queue.js';
 import {
   enqueueInboundProcessing,
@@ -24,6 +34,9 @@ import {
 import { ConfigurationError } from './lib/errors.js';
 import { createLogger } from './lib/logger.js';
 import { createConfiguredAi } from './providers/ai/registry.js';
+import type { OutboundDependencies } from './modules/messaging/outbound.js';
+import { createConfiguredCalendar } from './providers/calendar/registry.js';
+import { createConfiguredIntegrations } from './providers/integrations.js';
 import { createConfiguredMessaging, statusCallbackUrl } from './providers/messaging/registry.js';
 import { apiRouter } from './routes/api.js';
 
@@ -55,6 +68,13 @@ const messaging = createConfiguredMessaging(config);
 if (messaging === undefined) {
   logger.warn('SMS_PROVIDER is not set; outbound messaging and messaging webhooks are disabled');
 }
+const calendar = createConfiguredCalendar(config);
+const integrations = createConfiguredIntegrations(config);
+if (integrations.crm === undefined || integrations.notifications === undefined) {
+  logger.warn(
+    'CRM_PROVIDER / OWNER_NOTIFICATION_PROVIDER not set; booking deliveries are recorded as BLOCKED',
+  );
+}
 const ai = createConfiguredAi(config);
 if (messaging !== undefined && ai === undefined) {
   logger.warn(
@@ -79,8 +99,11 @@ if (db !== undefined && config.database.url !== undefined && config.jobs.workers
         schedule: true,
         queues: [
           ...campaignJobQueues(config.jobs),
+          ...operationsJobQueues(config.operations, config.messaging),
           ...(messaging === undefined ? [] : outboundJobQueues(config.messaging)),
-          ...(replyProcessingEnabled ? replyJobQueues(config.replies) : []),
+          ...(replyProcessingEnabled
+            ? [...replyJobQueues(config.replies), ...conversionJobQueues(config.conversion)]
+            : []),
         ],
       },
       logger,
@@ -91,8 +114,9 @@ if (db !== undefined && config.database.url !== undefined && config.jobs.workers
     await queue.start();
     await registerCampaignWorkers(deps);
     await scheduleCampaignScheduler(deps);
+    let outbound: OutboundDependencies | undefined;
     if (messaging !== undefined) {
-      const outbound = {
+      outbound = {
         db,
         logger,
         provider: messaging.provider,
@@ -120,10 +144,34 @@ if (db !== undefined && config.database.url !== undefined && config.jobs.workers
         };
         await registerReplyWorkers(replyJobs);
         await scheduleReplyProcessing(replyJobs);
+        const conversionJobs = {
+          queue: deps.queue,
+          logger,
+          qualificationDeps: {
+            db,
+            ai,
+            outbound,
+            logger,
+            conversion: config.conversion,
+            replies: config.replies,
+          },
+        };
+        await registerConversionWorkers(conversionJobs);
+        await scheduleConversion(conversionJobs);
         const jobQueue = deps.queue;
         onInboundMessage = (messageId) => enqueueInboundProcessing(jobQueue, messageId);
       }
     }
+    const operationsJobs = {
+      queue: deps.queue,
+      logger,
+      db,
+      operations: config.operations,
+      outbound,
+      deliveries: { db, logger, providers: integrations, operations: config.operations },
+    };
+    await registerOperationsWorkers(operationsJobs);
+    await scheduleOperations(operationsJobs);
   } catch (err) {
     logger.fatal({ err, operation: 'jobs.start' }, 'background jobs failed to start');
     await queue.stop().catch(() => undefined);
@@ -149,6 +197,9 @@ const app = createApp({
             ? {}
             : { messagingProviders: new Map([[messaging.provider.name, messaging.provider]]) }),
           ...(onInboundMessage === undefined ? {} : { onInboundMessage }),
+          ...(calendar === undefined
+            ? {}
+            : { calendarProviders: new Map([[calendar.name, calendar]]) }),
         }),
 });
 

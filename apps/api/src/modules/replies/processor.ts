@@ -14,6 +14,7 @@ import {
 import type { Logger } from '../../lib/logger.js';
 import { AiProviderError, type AiProvider } from '../../providers/ai/index.js';
 import { campaignConfigSchema } from '../campaigns/campaigns.js';
+import { hasOutstandingQualificationQuestion } from '../conversion/outstanding.js';
 import { canTransitionCampaignLead, transitionCampaignLead } from '../campaigns/membership.js';
 import { retrieveRelevantKnowledge } from '../knowledge/retrieval.js';
 import { normalizePhone } from '../leads/phone.js';
@@ -382,6 +383,11 @@ async function decide(
       },
     })) > 0;
 
+  const qualificationQuestionOutstanding =
+    inbound.campaignLeadId !== null &&
+    membership?.status === CampaignLeadStatus.ENGAGED &&
+    (await hasOutstandingQualificationQuestion(db, inbound.campaignLeadId));
+
   const route = routeReply({
     analysis,
     confidenceThreshold: deps.confidenceThreshold,
@@ -390,6 +396,7 @@ async function decide(
     awaitingHumanReview,
     clarificationAlreadySent,
     templates,
+    qualificationQuestionOutstanding,
   });
 
   switch (route.action) {
@@ -422,6 +429,13 @@ async function decide(
         status: 'COMPLETED',
         action: ReplyAction.CLARIFY,
         reply: route.reply,
+      });
+    case 'QUALIFICATION_ANSWER':
+      // No generic reply: the qualification job extracts and evaluates this answer.
+      return makeDecision({
+        ...base,
+        status: 'COMPLETED',
+        action: ReplyAction.QUALIFICATION_ANSWER,
       });
     case 'HUMAN_REVIEW':
       return makeDecision({
@@ -541,7 +555,8 @@ async function applyDecision(
       if (
         decision.engage &&
         inbound.campaignLeadId !== null &&
-        membershipStatus === CampaignLeadStatus.STEP_1_SENT
+        (membershipStatus === CampaignLeadStatus.STEP_1_SENT ||
+          membershipStatus === CampaignLeadStatus.STEP_2_SENT)
       ) {
         await transitionCampaignLead(
           tx,

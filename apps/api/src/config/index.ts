@@ -105,6 +105,34 @@ export interface AppConfig {
     /** PENDING replies older than this are re-enqueued for sending. */
     pendingReplyResendAfterMs: number;
   };
+  conversion: {
+    extractionMaxOutputTokens: number;
+    tickBatchSize: number;
+    cron: string;
+    jobRetryLimit: number;
+    jobRetryDelaySeconds: number;
+    jobExpireInSeconds: number;
+    /** PENDING question/booking-link messages older than this are re-enqueued. */
+    pendingSendAfterMs: number;
+    transactionTimeoutMs: number;
+    webhookBodyLimit: string;
+  };
+  operations: {
+    /** Step 2 candidates, archival and deliveries: one pg-boss cron tick. */
+    cron: string;
+    /** Rows examined per kind per tick. */
+    tickBatchSize: number;
+    transactionTimeoutMs: number;
+    /** Provider attempts per integration delivery before FAILED. */
+    deliveryMaxAttempts: number;
+    /** Retry delay doubles per attempt from this base. */
+    deliveryRetryBaseDelaySeconds: number;
+    /** A PROCESSING delivery older than this was interrupted and may be reclaimed. */
+    deliveryProcessingStaleAfterMs: number;
+    jobRetryLimit: number;
+    jobRetryDelaySeconds: number;
+    jobExpireInSeconds: number;
+  };
 }
 
 export const SERVICE_NAME = 'cadentor-reactivation-api';
@@ -154,6 +182,26 @@ const REPLIES_JOB_RETRY_DELAY_SECONDS = 30;
 /** Must exceed two AI calls plus one provider send. */
 const REPLIES_JOB_EXPIRE_IN_SECONDS = 180;
 const REPLIES_PENDING_REPLY_RESEND_AFTER_MS = 60_000;
+const CONVERSION_EXTRACTION_MAX_OUTPUT_TOKENS = 400;
+const CONVERSION_TICK_BATCH_SIZE = 200;
+const CONVERSION_CRON = '* * * * *';
+const CONVERSION_JOB_RETRY_LIMIT = 2;
+const CONVERSION_JOB_RETRY_DELAY_SECONDS = 30;
+/** Must exceed one AI call plus two provider sends. */
+const CONVERSION_JOB_EXPIRE_IN_SECONDS = 120;
+const CONVERSION_PENDING_SEND_AFTER_MS = 60_000;
+const CONVERSION_TRANSACTION_TIMEOUT_MS = 30_000;
+const CONVERSION_WEBHOOK_BODY_LIMIT = '64kb';
+const OPERATIONS_CRON = '* * * * *';
+const OPERATIONS_TICK_BATCH_SIZE = 200;
+const OPERATIONS_TRANSACTION_TIMEOUT_MS = 30_000;
+const OPERATIONS_DELIVERY_MAX_ATTEMPTS = 5;
+const OPERATIONS_DELIVERY_RETRY_BASE_DELAY_SECONDS = 60;
+const OPERATIONS_DELIVERY_PROCESSING_STALE_AFTER_MS = 10 * 60_000;
+const OPERATIONS_JOB_RETRY_LIMIT = 2;
+const OPERATIONS_JOB_RETRY_DELAY_SECONDS = 30;
+/** Must exceed one provider call plus two short transactions. */
+const OPERATIONS_JOB_EXPIRE_IN_SECONDS = 120;
 
 export function loadConfig(source: Record<string, string | undefined>): AppConfig {
   const env = parseEnv(source);
@@ -239,6 +287,28 @@ export function loadConfig(source: Record<string, string | undefined>): AppConfi
       jobRetryDelaySeconds: REPLIES_JOB_RETRY_DELAY_SECONDS,
       jobExpireInSeconds: REPLIES_JOB_EXPIRE_IN_SECONDS,
       pendingReplyResendAfterMs: REPLIES_PENDING_REPLY_RESEND_AFTER_MS,
+    },
+    conversion: {
+      extractionMaxOutputTokens: CONVERSION_EXTRACTION_MAX_OUTPUT_TOKENS,
+      tickBatchSize: CONVERSION_TICK_BATCH_SIZE,
+      cron: CONVERSION_CRON,
+      jobRetryLimit: CONVERSION_JOB_RETRY_LIMIT,
+      jobRetryDelaySeconds: CONVERSION_JOB_RETRY_DELAY_SECONDS,
+      jobExpireInSeconds: CONVERSION_JOB_EXPIRE_IN_SECONDS,
+      pendingSendAfterMs: CONVERSION_PENDING_SEND_AFTER_MS,
+      transactionTimeoutMs: CONVERSION_TRANSACTION_TIMEOUT_MS,
+      webhookBodyLimit: CONVERSION_WEBHOOK_BODY_LIMIT,
+    },
+    operations: {
+      cron: OPERATIONS_CRON,
+      tickBatchSize: OPERATIONS_TICK_BATCH_SIZE,
+      transactionTimeoutMs: OPERATIONS_TRANSACTION_TIMEOUT_MS,
+      deliveryMaxAttempts: OPERATIONS_DELIVERY_MAX_ATTEMPTS,
+      deliveryRetryBaseDelaySeconds: OPERATIONS_DELIVERY_RETRY_BASE_DELAY_SECONDS,
+      deliveryProcessingStaleAfterMs: OPERATIONS_DELIVERY_PROCESSING_STALE_AFTER_MS,
+      jobRetryLimit: OPERATIONS_JOB_RETRY_LIMIT,
+      jobRetryDelaySeconds: OPERATIONS_JOB_RETRY_DELAY_SECONDS,
+      jobExpireInSeconds: OPERATIONS_JOB_EXPIRE_IN_SECONDS,
     },
   };
 }
